@@ -33,7 +33,7 @@ Se aparecer **“O formulário não tem nenhum destino de resposta no momento.�
 
 ## Programação e formulários
 
-Os dez links enviados já constam em `Config.gs`, associados a atividades diferentes e com o campo `title` preenchido. `prepararFormulariosSeminfo2026` transfere essa lista para uma instalação existente, preservando os Forms anteriores e os mapeamentos já usados. O título visível do Forms é aplicado na instalação; as descrições existentes são preservadas. As abas nativas vinculadas também recebem o nome da atividade, como **Respostas — Oficina de Jogos — Ricardo Martins — Tarde**, preservando seu vínculo com o Form.
+Os dez links de inscrição já constam em `Config.gs`, associados a atividades diferentes e com o campo `title` preenchido. A fonte histórica da CSP também está configurada em `IMPORTACAO_CSP_JSON` e aparece em **Listar perguntas dos Forms existentes** como `IMPORTACAO_CSP`, sem ser instalada como inscrição individual. Na próxima instalação, o destino de respostas futuras da CSP será alterado para a planilha principal; a guia e as respostas antigas permanecem na planilha anterior. A nova guia recebe o nome **Respostas — Competição Seminfo de Programação — CSP**. `prepararFormulariosSeminfo2026` transfere a lista de inscrições para uma instalação existente, preservando os Forms anteriores e os mapeamentos já usados. O título visível dos Forms de inscrição é aplicado na instalação; as descrições existentes são preservadas. As abas nativas vinculadas também recebem o nome da atividade, como **Respostas — Oficina de Jogos — Ricardo Martins — Tarde**, preservando seu vínculo com o Form.
 
 | Form | Atividade | Vagas | Horário |
 |---|---|---:|---|

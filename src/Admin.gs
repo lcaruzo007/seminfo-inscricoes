@@ -510,20 +510,49 @@ function nomearAbasDeRespostas_() {
   }
   sources.forEach(function (source) {
     var form = openFormWithDriveRetry_(source.id);
-    if (cspSource && source.id === cspSource.formId && config.CSP_RESPONSE_SPREADSHEET_ID && config.CSP_RESPONSE_SHEET_ID) {
-      var targetId = Number(config.CSP_RESPONSE_SHEET_ID);
-      if (!Number.isInteger(targetId) || targetId < 1) throw new Error('CSP_RESPONSE_SHEET_ID inválido na aba Configuracoes.');
-      var targetSpreadsheet = SpreadsheetApp.openById(String(config.CSP_RESPONSE_SPREADSHEET_ID));
-      var targetSheet = targetSpreadsheet.getSheets().filter(function (sheet) { return sheet.getSheetId() === targetId; })[0];
-      if (!targetSheet) throw new Error('A guia configurada para respostas da CSP não foi encontrada na planilha informada.');
-      if (!responseSheetMatchesForm_(targetSheet, form)) {
-        throw new Error('A guia configurada para respostas da CSP não está vinculada ao Form ' + cspSource.formId + '. Nenhuma guia foi renomeada.');
+    if (cspSource && source.id === cspSource.formId) {
+      var targetSpreadsheet = db_();
+      var targetSpreadsheetId = targetSpreadsheet.getId();
+      var destination = formDestinationId_(form);
+      var existingTargetSheets = targetSpreadsheet.getSheets();
+      var existingTargetIds = existingTargetSheets.map(function (sheet) { return sheet.getSheetId(); });
+      if (destination && destination !== targetSpreadsheetId) {
+        var sourceSpreadsheet = SpreadsheetApp.openById(destination);
+        if (!sourceSpreadsheet.getSheets().some(function (sheet) { return responseSheetMatchesForm_(sheet, form); })) {
+          throw new Error('O destino atual de respostas da CSP não contém uma guia vinculada ao Form. Nenhum destino foi alterado.');
+        }
+      } else if (!destination && config.CSP_RESPONSE_SPREADSHEET_ID &&
+          String(config.CSP_RESPONSE_SPREADSHEET_ID) !== targetSpreadsheetId && config.CSP_RESPONSE_SHEET_ID) {
+        var oldSheetId = Number(config.CSP_RESPONSE_SHEET_ID);
+        if (!Number.isInteger(oldSheetId) || oldSheetId < 1) throw new Error('CSP_RESPONSE_SHEET_ID inválido na aba Configuracoes.');
+        var oldSpreadsheet = SpreadsheetApp.openById(String(config.CSP_RESPONSE_SPREADSHEET_ID));
+        var oldSheet = oldSpreadsheet.getSheets().filter(function (sheet) { return sheet.getSheetId() === oldSheetId; })[0];
+        if (!oldSheet || !responseSheetMatchesForm_(oldSheet, form)) {
+          throw new Error('A guia configurada para respostas da CSP não está vinculada ao Form ' + cspSource.formId + '. Nenhum destino foi alterado.');
+        }
       }
+      if (destination !== targetSpreadsheetId) {
+        form.setDestination(FormApp.DestinationType.SPREADSHEET, targetSpreadsheetId);
+      }
+      var newTargetSheets = targetSpreadsheet.getSheets().filter(function (sheet) {
+        return existingTargetIds.indexOf(sheet.getSheetId()) < 0 && responseSheetMatchesForm_(sheet, form);
+      });
+      var matchingTargetSheets = newTargetSheets.length ? newTargetSheets :
+        targetSpreadsheet.getSheets().filter(function (sheet) { return responseSheetMatchesForm_(sheet, form); });
+      if (matchingTargetSheets.length !== 1) {
+        throw new Error(matchingTargetSheets.length ?
+          'Mais de uma guia de respostas da CSP foi encontrada na planilha principal. Nenhuma guia foi renomeada.' :
+          'O Form CSP foi vinculado à planilha principal, mas sua guia de respostas não foi encontrada.');
+      }
+      var targetSheet = matchingTargetSheets[0];
+      var targetId = targetSheet.getSheetId();
       var cspBase = ('Respostas — ' + (source.title || form.getTitle())).replace(/[\\/?*\[\]:]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100);
       var cspCollision = targetSpreadsheet.getSheets().some(function (sheet) { return sheet.getName() === cspBase && sheet.getSheetId() !== targetId; });
       var cspName = cspCollision ? cspBase.slice(0, 78) + ' ' + targetId : cspBase;
       if (targetSheet.getName() !== cspName) targetSheet.setName(cspName);
-      result.push({formId: source.id, aba: cspName, planilha: targetSpreadsheet.getId()});
+      setConfig_('CSP_RESPONSE_SPREADSHEET_ID', targetSpreadsheetId);
+      setConfig_('CSP_RESPONSE_SHEET_ID', targetId);
+      result.push({formId: source.id, aba: cspName, planilha: targetSpreadsheetId});
       return;
     }
     var destination = formDestinationId_(form);

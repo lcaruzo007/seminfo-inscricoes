@@ -7,9 +7,10 @@ var SEMINFO_CONFIG = Object.freeze({
   ID_FORM_INSCRICAO: '',
   ID_FORM_CANCELAMENTO: '1jb4dGQGcCpQyrLthWvCakBtkED8SwG2UC2k3LxoI9eI',
   URL_FORM_CANCELAMENTO_EMAIL: '',
-  CSP_RESPONSE_SPREADSHEET_ID: '1tFSDmBp9wsCskM0dIF_ax9-CM6upvodHAYL0xi2QhrA',
-  CSP_RESPONSE_SHEET_ID: '858916137',
-  IMPORTACAO_CSP_JSON: JSON.stringify({formId: '1oXixuiIIJ1sGVdTgs0uEQVSEaqxEO5NqupTi-4xv2ww', activityId: 'CSP_2026', schema: 'equipes',
+  CSP_RESPONSE_SPREADSHEET_ID: '1ir3nRnH9ulhZxI4Eu1yP6uvdgFlfWmZ-gs8zlvN-pCE',
+  CSP_RESPONSE_SHEET_ID: '',
+  IMPORTACAO_CSP_JSON: JSON.stringify({formId: '1oXixuiIIJ1sGVdTgs0uEQVSEaqxEO5NqupTi-4xv2ww', activityId: 'CSP_2026',
+    title: 'Competição Seminfo de Programação — CSP', schema: 'equipes',
     items: {TEAM_TYPE: 742351656, TEAM_NAME: 396811097, TEAM_SIZE: 1358170985, MEMBER1: 98572697, MEMBER2: 1537440165, MEMBER3: 1869818828}}),
   FORMULARIOS_INSCRICAO_JSON: JSON.stringify([
     {id: '1gD2e10L3Zx4cL56TkEIkpgnaP7uX6Qfo1PnAsGYg5fs', activityId: 'ABERTURA_2026', title: 'Abertura — XXI Seminfo', items: {}},

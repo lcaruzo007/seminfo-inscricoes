@@ -22,7 +22,7 @@ Google Forms · Google Sheets · Google Apps Script
 
 O SEMINFO conecta os formulários do evento a uma planilha central. Cada solicitação passa por validação de identidade, CPF, disponibilidade e conflito de horário. O participante recebe o resultado por e-mail, e a organização acompanha inscrições, equipes e ocupação pelo menu **SEMINFO**.
 
-O projeto já inclui os **10 Forms informados** e os **18 itens da programação**, incluindo a abertura. Atividades com informações incompletas aparecem como **pendentes** e recebem inscrições depois que seus dados forem completados e a abertura for autorizada.
+O projeto já inclui os **10 Forms de inscrição** e o Form histórico da CSP, além dos **18 itens da programação**, incluindo a abertura. A CSP aparece no inventário de Forms sem ser instalada como inscrição individual; suas respostas continuam no fluxo de importação por equipes. Atividades com informações incompletas aparecem como **pendentes** e recebem inscrições depois que seus dados forem completados e a abertura for autorizada.
 
 ## O que o sistema faz
 

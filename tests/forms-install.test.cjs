@@ -1206,6 +1206,19 @@ function teamCspEnvironment(capacity = 30, realNotifications = false) {
   return {...e, form, source, teamResponse: response};
 }
 
+test('Inventário de Forms lista a fonte histórica da CSP sem instalá-la como inscrição individual', () => {
+  const e = teamCspEnvironment();
+  const activeSources = e.context.getFormSources_();
+  const listed = e.context.listarPerguntasDosFormularios();
+  const csp = listed.find(source => source.id === e.form.id);
+  assert.ok(csp);
+  assert.equal(csp.kind, 'IMPORTACAO_CSP');
+  assert.equal(csp.activityId, 'CSP_2026');
+  assert.equal(csp.title, 'Inscrição CSP por equipe');
+  assert.equal(activeSources.some(source => source.id === e.form.id), false);
+  assert.equal(e.properties.has('SEMINFO_FORM_ACTIVITY_' + e.form.id), false);
+});
+
 test('Equipe com três integrantes ocupa uma vaga e exporta todos os CPFs completos sem criar e-mails', () => {
   const e = teamCspEnvironment(2, true);
   const response = e.teamResponse('Equipe Alpha', ['Coach Exemplo - 52998224725', 'Pessoa Exemplo - 11144477735', 'Terceira Pessoa - 01234567890']);
@@ -1749,15 +1762,49 @@ test('Nomeia a aba nativa do Form histórico da CSP pelo título da atividade e 
   assert.equal(raw.name, 'Respostas — Competição Seminfo de Programação — CSP');
   assert.equal(raw.cells[1][0], 'Equipe Exemplo');
   assert.ok(result.some(entry => entry.formId === e.legacy.form.id && entry.aba === raw.name));
+  assert.equal(e.context.getConfig_().CSP_RESPONSE_SPREADSHEET_ID, 'SHEET');
+  assert.equal(e.context.getConfig_().CSP_RESPONSE_SHEET_ID, String(raw.getSheetId()));
 });
 
-test('Não renomeia a guia CSP configurada quando ela não está vinculada ao Form esperado', () => {
+test('Migra o destino de respostas CSP para a planilha principal e preserva a guia antiga', () => {
   const e = historicalCspEnvironment();
+  e.context.salvarAtividade(e.activity('CSP_2026', {title: 'Competição Seminfo de Programação — CSP', capacityUnit: 'equipes'}));
+  e.legacy.form.destination = '1tFSDmBp9wsCskM0dIF_ax9-CM6upvodHAYL0xi2QhrA';
+  const archived = e.context.db_().insertSheet('Respostas CSP antiga');
+  archived.sheetId = 858916137;
+  archived.formUrl = e.legacy.form.getPublishedUrl();
+  archived.appendRow(['Equipe']).appendRow(['Equipe arquivada']);
+  e.legacy.form.setDestination = function (_, spreadsheetId) {
+    this.destination = spreadsheetId;
+    const responseSheet = e.context.db_().insertSheet('Respostas ao formulário CSP');
+    responseSheet.formUrl = this.getPublishedUrl();
+    responseSheet.appendRow(['Equipe']).appendRow(['Equipe nova']);
+    return this;
+  };
+
+  const result = e.context.nomearAbasDeRespostas_();
+  const current = e.context.db_().getSheets().filter(sheet =>
+    sheet.getSheetId() !== archived.getSheetId() && sheet.formUrl === e.legacy.form.getPublishedUrl())[0];
+
+  assert.equal(e.legacy.form.destination, 'SHEET');
+  assert.equal(archived.name, 'Respostas CSP antiga');
+  assert.equal(archived.cells[1][0], 'Equipe arquivada');
+  assert.equal(current.name, 'Respostas — Competição Seminfo de Programação — CSP');
+  assert.equal(current.cells[1][0], 'Equipe nova');
+  assert.equal(e.context.getConfig_().CSP_RESPONSE_SPREADSHEET_ID, 'SHEET');
+  assert.equal(e.context.getConfig_().CSP_RESPONSE_SHEET_ID, String(current.getSheetId()));
+  assert.ok(result.some(entry => entry.formId === e.legacy.form.id && entry.aba === current.name));
+});
+
+test('Não altera o destino CSP quando a guia antiga configurada não está vinculada ao Form esperado', () => {
+  const e = historicalCspEnvironment();
+  e.legacy.form.destination = '1tFSDmBp9wsCskM0dIF_ax9-CM6upvodHAYL0xi2QhrA';
   const raw = e.context.db_().insertSheet('Respostas ao formulário 8');
   raw.sheetId = 858916137;
   raw.formUrl = 'https://docs.google.com/forms/d/outro-form/edit';
 
-  assert.throws(() => e.context.nomearAbasDeRespostas_(), /não está vinculada ao Form/);
+  assert.throws(() => e.context.nomearAbasDeRespostas_(), /não contém uma guia vinculada ao Form/);
+  assert.equal(e.legacy.form.destination, '1tFSDmBp9wsCskM0dIF_ax9-CM6upvodHAYL0xi2QhrA');
   assert.equal(raw.name, 'Respostas ao formulário 8');
 });
 

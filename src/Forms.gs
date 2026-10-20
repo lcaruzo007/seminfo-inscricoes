@@ -94,6 +94,25 @@ function getFormSources_() {
   return sources;
 }
 
+/** Inclui a fonte histórica CSP no inventário, sem instalá-la como inscrição individual. */
+function getFormInventorySources_() {
+  var sources = getFormSources_();
+  var raw = String(getConfig_().IMPORTACAO_CSP_JSON || '').trim();
+  if (!raw || raw === '{}') return sources;
+  var csp = getCspImportSource_();
+  if (sources.some(function (source) { return source.id === csp.formId; })) return sources;
+  var title = csp.title || '';
+  if (!title) {
+    var activity = readState_().activities[csp.activityId];
+    var scheduledActivity = typeof programacaoSeminfo2026_ === 'function' ?
+      programacaoSeminfo2026_().filter(function (entry) { return entry.id === csp.activityId; })[0] : null;
+    title = activity && activity.title || scheduledActivity && scheduledActivity.title || '';
+  }
+  sources.push({kind: 'IMPORTACAO_CSP', id: csp.formId, activityId: csp.activityId,
+    title: title, items: csp.items});
+  return sources;
+}
+
 function shouldCreateCancellationForm_() {
   var value = getConfig_().CRIAR_FORM_CANCELAMENTO;
   return value === undefined || value === true || /^(true|sim)$/i.test(String(value));
@@ -102,7 +121,7 @@ function shouldCreateCancellationForm_() {
 /** IDs e tipos de todas as perguntas; a consulta preserva os Forms existentes. */
 function listarPerguntasDosFormularios() {
   if (PropertiesService.getScriptProperties().getProperty('SEMINFO_INSTALLER')) requireInstaller_();
-  var result = getFormSources_().map(function (source) {
+  var result = getFormInventorySources_().map(function (source) {
     var form = openFormWithDriveRetry_(source.id);
     return {kind: source.kind, id: source.id, title: form.getTitle(), activityId: source.activityId, editUrl: form.getEditUrl(),
       items: form.getItems().map(function (item) { return {id: item.getId(), title: item.getTitle(), type: String(item.getType())}; })};
