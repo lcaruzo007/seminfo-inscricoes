@@ -1,0 +1,30 @@
+# Entregas e relatórios gerados localmente
+/dist/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Dependências locais opcionais
+node_modules/
+
+# Credenciais e configuração local
+.env
+.env.*
+!.env.example
+.clasprc.json
+.clasp.json
+credentials.json
+service-account*.json
+
+# Editor e sistema operacional
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+Desktop.ini
+~$*
+*.tmp

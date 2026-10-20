@@ -1,0 +1,196 @@
+/** Livro oficial: uma célula JSON selada para toda a decisão, inclusive todas as trocas. */
+function hash_(text) {
+  return Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, text, Utilities.Charset.UTF_8).map(function(b) { return ('0' + ((b + 256) % 256).toString(16)).slice(-2); }).join('');
+}
+
+function readJournal_() {
+  var sheet = ensureTable_('Operacoes', SEMINFO_TABLES.Operacoes);
+  var cells = sheet.getLastRow() < 2 ? [] : sheet.getRange(2, 1, sheet.getLastRow() - 1, 1).getDisplayValues();
+  var previous = 'GENESIS', operations = [], byKey = {};
+  cells.forEach(function(row, index) {
+    var envelope, operation;
+    try {
+      if (!row[0]) throw new Error('Registro vazio.');
+      envelope = JSON.parse(row[0]);
+      if (envelope.v !== 1 || envelope.previous !== previous || typeof envelope.payload !== 'string' || envelope.hash !== hash_(envelope.previous + '\n' + envelope.payload)) throw new Error('Selo inválido.');
+      operation = JSON.parse(envelope.payload);
+      if (!operation.key || !operation.kind || !operation.at) throw new Error('Operação sem identidade.');
+      previous = envelope.hash;
+      if (byKey[operation.key]) {
+        if (JSON.stringify(byKey[operation.key]) !== JSON.stringify(operation)) throw new Error('Chave repetida com decisão divergente.');
+      } else { byKey[operation.key] = operation; operations.push(operation); }
+    } catch (_) {
+      throw new Error('Livro oficial inválido na linha ' + (index + 2) + '. Processamento bloqueado; restaure o registro a partir de backup/histórico de versões.');
+    }
+  });
+  var state = SemDomain.createState();
+  operations.forEach(function(op) { state = SemDomain.applyOperation(state, op); });
+  SemDomain.validateState(state);
+  return {operations: operations, byKey: byKey, state: state, head: previous};
+}
+
+function readState_() { return readJournal_().state; }
+
+/** Chamado SOMENTE dentro de withLock_. Releia o livro antes de qualquer tentativa. */
+function commitOperationLocked_(journal, operation) {
+  if (journal.byKey[operation.key]) return journal.byKey[operation.key];
+  SemDomain.validateState(SemDomain.applyOperation(journal.state, operation));
+  var payload = JSON.stringify(operation);
+  var envelope = {v: 1, previous: journal.head, payload: payload, hash: hash_(journal.head + '\n' + payload)};
+  var text = JSON.stringify(envelope);
+  if (text.length > 45000) throw new Error('Operação excede o limite seguro de uma célula. Inscrições anteriores preservadas; solicite atendimento.');
+  var sheet = ensureTable_('Operacoes', SEMINFO_TABLES.Operacoes);
+  if (sheet.getMaxRows() < sheet.getLastRow() + 1) sheet.insertRowsAfter(sheet.getMaxRows(), 1);
+  var range = sheet.getRange(sheet.getLastRow() + 1, 1);
+  range.setNumberFormat('@');
+  range.setValue(text);
+  SpreadsheetApp.flush();
+  // Não repita o append às cegas se a resposta da gravação for incerta.
+  var persisted = readJournal_().byKey[operation.key];
+  if (!persisted || JSON.stringify(persisted) !== payload) throw new Error('Gravação sem confirmação de leitura; recuperação necessária.');
+  return persisted;
+}
+
+function rebuildViewsLocked_(journal) {
+  var state = journal.state;
+  writeTable_('Atividades', SEMINFO_TABLES.Atividades, Object.values(state.activities).map(function(a) {
+    return [a.id, a.title, a.type, a.description, a.instructor, a.location, a.start, a.end, a.capacity === null ? '' : a.capacity, a.status, SemDomain.occupancy(state, a.id)];
+  }));
+  writeTable_('Participantes', SEMINFO_TABLES.Participantes, Object.values(state.participants).map(function(p) { return [p.cpf, p.name, p.email]; }));
+  writeTable_('Solicitacoes', SEMINFO_TABLES.Solicitacoes, journal.operations.filter(function(op) { return op.kind === 'REQUEST'; }).map(function(op) {
+    var r = op.request;
+    return [op.key, r.protocol, r.formId || 'ADMIN', r.responseId || '', r.submittedAt, op.at, r.kind, r.cpf, r.email, r.activityId, op.outcome.code];
+  }));
+  writeTable_('Inscricoes', SEMINFO_TABLES.Inscricoes, Object.values(state.registrations).map(function(r) {
+    return [r.id, r.cpf, r.activityId, r.status, r.createdAt, r.canceledAt || r.createdAt, r.cancellationReason || ''];
+  }));
+  var teams = Object.values(state.registrations).filter(function (registration) { return registration.entityType === 'EQUIPE'; });
+  if (teams.length) {
+    writeTable_('Equipes', SEMINFO_TABLES.Equipes, teams.map(function (team) {
+      return [team.id, team.activityId, team.teamName, team.teamType || '', team.cpf, team.members.length, team.status, team.createdAt, team.cancellationReason || ''];
+    }));
+    var members = [];
+    teams.forEach(function (team) { team.members.forEach(function (member) {
+      members.push([team.id, team.teamName, member.cpf, member.name, member.role, member.turma || '', member.telefone || '', member.raw || '']);
+    }); });
+    writeTable_('IntegrantesEquipes', SEMINFO_TABLES.IntegrantesEquipes, members);
+    ['Equipes', 'IntegrantesEquipes'].forEach(function (name) {
+      var sheet = db_().getSheetByName(name), description = 'SEMINFO — edição exclusiva pela conta instaladora';
+      if (!sheet.getProtections(SpreadsheetApp.ProtectionType.SHEET).some(function (protection) { return protection.getDescription() === description; })) {
+        var protection = sheet.protect().setDescription(description), installer = props_().getProperty('SEMINFO_INSTALLER');
+        protection.setWarningOnly(false).addEditor(installer);
+        protection.removeEditors(protection.getEditors().filter(function (user) { return user.getEmail().toLowerCase() !== installer; }));
+        if (protection.canDomainEdit()) protection.setDomainEdit(false);
+      }
+    });
+  }
+  writeTable_('Historico', SEMINFO_TABLES.Historico, journal.operations.map(function(op) {
+    return [op.key, op.at, op.kind, op.kind === 'REQUEST' ? op.request.protocol + ': ' + op.outcome.code : (op.reason || (op.activity && op.activity.id) || String(op.accepting))];
+  }));
+  syncNotificationQueueLocked_(journal.operations);
+}
+
+function enrichOutcome_(state, request, outcome) {
+  if (outcome.code === 'identity_mismatch' || outcome.code === 'invalid') return outcome;
+  if (state.activities[request.activityId]) outcome.activity = state.activities[request.activityId];
+  outcome.changes.forEach(function(change) {
+    if (change.type === 'CANCEL') {
+      var registration = state.registrations[change.registrationId];
+      change.activity = registration.activity || state.activities[registration.activityId];
+    }
+  });
+  return outcome;
+}
+
+function processFormResponse_(kind, form, response, deferViews) {
+  var request;
+  try {
+    request = parseFormRequest_(kind, form, response); // Valida VERIFIED pela API antes de qualquer vínculo.
+    return withLock_(function() {
+      var journal = readJournal_();
+      var resetAt = props_().getProperty('SEMINFO_RESET_AT');
+      if (resetAt && Date.parse(request.submittedAt) <= Date.parse(resetAt)) throw new Error('Resposta anterior à limpeza; envie novamente após a abertura.');
+      if (!journal.byKey[request.key]) {
+        var outcome = enrichOutcome_(journal.state, request, SemDomain.decide(journal.state, request));
+        commitOperationLocked_(journal, {key: request.key, kind: 'REQUEST', at: new Date().toISOString(), request: request, outcome: outcome});
+        journal = readJournal_();
+      }
+      if (deferViews !== true) { rebuildViewsLocked_(journal); refreshFormsLocked_(journal.state); }
+      return journal.byKey[request.key].outcome;
+    });
+  } catch (error) {
+    var key = request ? request.key : (form && response ? form.getId() + ':' + response.getId() : '');
+    recordError_('processamento', key, error);
+    // Após falhas recorrentes, avisa pelo endereço VERIFIED já obtido. A resposta
+    // permanece pendente: este aviso não é uma decisão nem ocupa/libera vaga.
+    if (request && request.email) {
+      try {
+        withLock_(function() {
+          var failures = tableRows_('Erros').filter(function(row) { return row.CHAVE === key; });
+          var completed = false;
+          try { completed = Boolean(readJournal_().byKey[key]); } catch (_) { /* Estado oficial indeterminado exige atendimento. */ }
+          if (failures.length >= 3 && !completed) syncNotificationQueueLocked_([{key: 'FALHA:' + key, kind: 'REQUEST', at: new Date().toISOString(), request: request, outcome: {code: 'failure', changes: []}}]);
+        });
+      } catch (_) { /* O Forms continua sendo a caixa de entrada durável. */ }
+    }
+    throw error;
+  }
+}
+
+function postProcessing_(deadline) {
+  try { return processarNotificacoes(deadline); }
+  catch (error) { recordError_('notificacoes', '', error); return {erro: safeError_(error)}; }
+}
+
+/** Varredura completa da caixa de entrada dos dois Forms; nenhum cursor pode pular respostas. */
+function processarSolicitacoesPendentes(deadline) {
+  requireInstaller_();
+  var config = getConfig_(), started = Date.now(), pending = [], quarantined = 0, processed = readJournal_().byKey;
+  var executionDeadline = Math.min(started + 210000, Number(deadline) || Infinity);
+  var sources = getFormSources_(), cursor = Number(props_().getProperty('SEMINFO_SCAN_FORM_INDEX') || 0), scanned = 0, scanErrors = 0;
+  for (var offset = 0; offset < sources.length && Date.now() < executionDeadline - 30000; offset++) {
+    var index = (cursor + offset) % sources.length, source = sources[index];
+    try {
+      var form = FormApp.openById(source.id);
+      assertVerifiedEmail_(form);
+      var responses = form.getResponses();
+      var responseCursorKey = 'SEMINFO_SCAN_RESPONSE_INDEX_' + form.getId();
+      var responseCursor = Number(props_().getProperty(responseCursorKey) || 0), nextResponseIndex = responseCursor;
+      if (!Number.isInteger(responseCursor) || responseCursor < 0) responseCursor = 0;
+      for (var responseOffset = 0; responseOffset < responses.length && Date.now() < executionDeadline - 30000; responseOffset++) {
+        var ri = (responseCursor + responseOffset) % responses.length, response = responses[ri];
+        nextResponseIndex = (ri + 1) % responses.length;
+        if (processed[form.getId() + ':' + response.getId()]) continue;
+        if (!isEligibleFormResponse_(form, response)) { quarantined++; continue; }
+        pending.push({kind: source.kind, form: form, response: response});
+        if (pending.length >= config.MAX_SOLICITACOES_POR_EXECUCAO) break;
+      }
+      props_().setProperty(responseCursorKey, String(nextResponseIndex));
+    } catch (error) { scanErrors++; recordError_('varredura-form', source.id, error); }
+    scanned++;
+    props_().setProperty('SEMINFO_SCAN_FORM_INDEX', String((index + 1) % sources.length));
+    if (pending.length >= config.MAX_SOLICITACOES_POR_EXECUCAO) break;
+  }
+  pending.sort(function(a, b) { return a.response.getTimestamp().getTime() - b.response.getTimestamp().getTime(); });
+  var done = 0, failed = 0;
+  for (var i = 0; i < pending.length && done + failed < config.MAX_SOLICITACOES_POR_EXECUCAO && Date.now() < executionDeadline; i++) {
+    try { processFormResponse_(pending[i].kind, pending[i].form, pending[i].response, true); done++; }
+    catch (_) { failed++; }
+  }
+  withLock_(function() { var journal = readJournal_(); rebuildViewsLocked_(journal); refreshFormsLocked_(journal.state); });
+  return {processadas: done, falhas: failed, pendentesNoLote: pending.length - done, loteCheio: pending.length >= config.MAX_SOLICITACOES_POR_EXECUCAO, respostasEmQuarentena: quarantined, formulariosVarridos: scanned, errosDeVarredura: scanErrors, varreduraParcial: scanned < sources.length};
+}
+
+function manutencaoPeriodica() {
+  var deadline = Date.now() + 270000;
+  try { processarSolicitacoesPendentes(deadline); }
+  catch (error) { recordError_('recuperacao', '', error); }
+  try { sincronizarNomesAbasDeRespostas_(); }
+  catch (error) { recordError_('nomear-abas-respostas', '', error); }
+  postProcessing_(deadline);
+}
+
+function reconstruirVisoes() {
+  requireInstaller_();
+  return withLock_(function() { var journal = readJournal_(); rebuildViewsLocked_(journal); refreshFormsLocked_(journal.state); return journal.operations.length; });
+}

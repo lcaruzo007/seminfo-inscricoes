@@ -1,0 +1,70 @@
+[
+  {
+    "id": "1gD2e10L3Zx4cL56TkEIkpgnaP7uX6Qfo1PnAsGYg5fs",
+    "activityId": "ABERTURA_2026",
+    "title": "Abertura — XXI Seminfo",
+    "items": {}
+  },
+  {
+    "id": "1RBZLZRULRV9Tm9ca-IF4jo9-XfqDPDEYW0QXZF2Osj8",
+    "activityId": "OFICINA_GAMEMAKER",
+    "title": "Oficina de Jogos — Ricardo Martins — Tarde",
+    "items": {
+      "NAME": 859649298,
+      "CPF": 760956815,
+      "SWAP": 356100908
+    }
+  },
+  {
+    "id": "1_5SDFy4fo9_Z4VHRGknl9Zk3cKdSpo--qmBGiA3LbGU",
+    "activityId": "OFICINA_JOGOS_NOITE",
+    "title": "Oficina de Jogos — Ricardo Martins — Noite",
+    "items": {}
+  },
+  {
+    "id": "1Gi6L9zhuS_QC1WfdggJ9DKFh7JheOIkuAPJS3CAZROQ",
+    "activityId": "OFICINA_BLENDER",
+    "title": "Oficina de 3D — Caio H.",
+    "items": {
+      "NAME": 859649298,
+      "CPF": 760956815,
+      "SWAP": 886894478
+    }
+  },
+  {
+    "id": "1pxsvR0WlyH3QXcUUYTAhFMTd-FnbsfwekesEED9IxcU",
+    "activityId": "OFICINA_OLLAMA",
+    "title": "Oficina Ollama — Darosa",
+    "items": {}
+  },
+  {
+    "id": "16O4ErOSmYY9X0y0xGdKZ0w9p2WNStUAWb_CF65OuMjs",
+    "activityId": "OFICINA_IA_ALEM_CHAT",
+    "title": "Oficina IA Além do Chat — Rafaela",
+    "items": {}
+  },
+  {
+    "id": "1g-uG-5jHRtSXm7hW5R3ynBVkuCTrKtjnW3heKfz3es8",
+    "activityId": "PALESTRA_BIO",
+    "title": "Palestra Bio — Auditório H",
+    "items": {}
+  },
+  {
+    "id": "1wSyqdk-CWLhizEJI9YkkikDkHkyWoZ6ZfmsCLIZvuQs",
+    "activityId": "OFICINA_SEGURANCA",
+    "title": "Oficina Segurança da Informação — Rafaela",
+    "items": {}
+  },
+  {
+    "id": "1_RzlNsniwp_NryGGu1F5uHOGSLvEYvg_xn4BEXnnNgI",
+    "activityId": "PALESTRA_DANIELE",
+    "title": "Palestra Online — Daniele Tavares",
+    "items": {}
+  },
+  {
+    "id": "14Uf2m_mLeZJSDjX7vgwkiriY5hKbDD9EKuS2EUNM8_Q",
+    "activityId": "PALESTRA_JOHNATAN",
+    "title": "Palestra Online — Johnatan UFLA",
+    "items": {}
+  }
+]
