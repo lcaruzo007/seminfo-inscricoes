@@ -32,6 +32,7 @@ function fixture() {
   let lastRefreshedState = null;
   let maxRows = 4;
   const installer = 'organizacao@example.org';
+  const scriptProperties = new Map([['SEMINFO_INSTALLER', installer]]);
 
   function fault(name) {
     if (!faults[name]) return false;
@@ -41,7 +42,7 @@ function fixture() {
 
   const scriptLock = {
     waitLock(milliseconds) {
-      assert.equal(milliseconds, 20000);
+      assert.equal(milliseconds, 30000);
       if (locked) throw new Error('Bloqueio simulado já ocupado.');
       locked = true;
       acquisitions++;
@@ -103,7 +104,9 @@ function fixture() {
     },
     PropertiesService: {
       getScriptProperties: () => ({
-        getProperty: key => key === 'SEMINFO_INSTALLER' ? installer : ''
+        getProperty: key => scriptProperties.get(key) || '',
+        setProperty: (key, value) => { scriptProperties.set(key, String(value)); return this; },
+        deleteProperty: key => { scriptProperties.delete(key); return this; }
       })
     },
     Session: { getEffectiveUser: () => ({ getEmail: () => installer }) },
@@ -149,7 +152,8 @@ function fixture() {
     }
   };
   context.refreshFormsLocked_ = state => {
-    assert.equal(locked, true, 'atualização do formulário deve ser protegida');
+    assert.equal(locked, false, 'chamadas ao Forms não devem manter o ScriptLock');
+    assert.equal(scriptProperties.has('SEMINFO_FORM_REFRESH_PENDING'), true, 'o marcador deve serializar atualizações externas');
     if (fault('refresh')) throw new Error('Falha simulada durante a atualização de opções.');
     lastRefreshedState = plain(state);
   };

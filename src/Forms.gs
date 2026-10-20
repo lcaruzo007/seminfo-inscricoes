@@ -103,7 +103,7 @@ function shouldCreateCancellationForm_() {
 function listarPerguntasDosFormularios() {
   if (PropertiesService.getScriptProperties().getProperty('SEMINFO_INSTALLER')) requireInstaller_();
   var result = getFormSources_().map(function (source) {
-    var form = FormApp.openById(source.id);
+    var form = openFormWithDriveRetry_(source.id);
     return {kind: source.kind, id: source.id, title: form.getTitle(), activityId: source.activityId, editUrl: form.getEditUrl(),
       items: form.getItems().map(function (item) { return {id: item.getId(), title: item.getTitle(), type: String(item.getType())}; })};
   });
@@ -111,7 +111,7 @@ function listarPerguntasDosFormularios() {
   return result;
 }
 
-/** Executar somente dentro do ScriptLock da instalação. Preserva respostas. */
+/** Executar durante a instalação exclusiva, sem manter o ScriptLock nas chamadas ao Forms. Preserva respostas. */
 function setupForms_() {
   var cfg = getConfig_();
   var definitions = getRegistrationFormDefinitions_();
@@ -120,12 +120,12 @@ function setupForms_() {
   // Todas as origens existentes passam pela conferência antes de qualquer setter.
   getFormSources_();
   var registrations = definitions.map(function (source) {
-    var form = source.id ? FormApp.openById(source.id) : null;
+    var form = source.id ? openFormWithDriveRetry_(source.id) : null;
     if (form) preflightForm_('INSCRICAO', form, source);
     return {source: source, form: form};
   });
   var cancelId = cfg.ID_FORM_CANCELAMENTO || PropertiesService.getScriptProperties().getProperty('SEMINFO_ID_FORM_CANCELAMENTO');
-  var cancellation = cancelId ? FormApp.openById(cancelId) : null;
+  var cancellation = cancelId ? openFormWithDriveRetry_(cancelId) : null;
   if (cancellation) preflightForm_('CANCELAMENTO', cancellation, {items: {}});
   registrations.forEach(function (entry) {
     if (!entry.form) entry.form = getOrCreateForm_('INSCRICAO', '');
@@ -182,7 +182,7 @@ function getOrCreateForm_(kind, configuredId) {
   var form;
   if (id) {
     // IDs inacessíveis não provocam criação silenciosa de um segundo formulário.
-    form = FormApp.openById(id);
+    form = openFormWithDriveRetry_(id);
   } else {
     var documentTitle = 'SEMINFO [' + ScriptApp.getScriptId() + '] ' + kind;
     var files = DriveApp.getFilesByName(documentTitle);
@@ -196,7 +196,7 @@ function getOrCreateForm_(kind, configuredId) {
     if (candidates.length > 1) {
       throw new Error('Mais de um formulário com o marcador ' + kind + '. Informe o ID correto; nenhum recurso foi excluído.');
     }
-    form = candidates.length ? FormApp.openById(candidates[0]) : FormApp.create(documentTitle, false);
+    form = candidates.length ? openFormWithDriveRetry_(candidates[0]) : FormApp.create(documentTitle, false);
     props.setProperty('SEMINFO_CREATED_FORM_' + form.getId(), 'true');
   }
   props.setProperty(property, form.getId());
@@ -424,6 +424,43 @@ function getFormMetadata_(form, force) {
   return metadata;
 }
 
+/** Configuração administrativa explícita; a abertura continua sendo uma etapa separada. */
+function configurarEmailVerificadoFormularios() {
+  requireInstaller_();
+  var result = withExternalFormOperation_(function () {
+    var entries = getFormSources_().map(function (source) { return {source: source, form: openFormWithDriveRetry_(source.id)}; });
+    if (!entries.length) throw new Error('Instale os formulários antes de configurar o e-mail verificado.');
+    var properties = PropertiesService.getScriptProperties();
+    properties.deleteProperty('SEMINFO_FORMS_ACTIVATED');
+    entries.forEach(function (entry) { setFormReceiving_(entry.form, false); });
+    var reports = entries.map(function (entry) {
+      var form = entry.form, id = form.getId(), metadata = getFormMetadata_(form, true);
+      var changed = !metadata.settings || metadata.settings.emailCollectionType !== 'VERIFIED';
+      if (changed) {
+        // Respostas anteriores à correção não passam a ter identidade verificada.
+        properties.deleteProperty('SEMINFO_VERIFIED_SINCE_' + id);
+        delete SEMINFO_FORM_METADATA_[id];
+        var response = UrlFetchApp.fetch('https://forms.googleapis.com/v1/forms/' + encodeURIComponent(id) + ':batchUpdate', {
+          method: 'post', contentType: 'application/json',
+          headers: {Authorization: 'Bearer ' + ScriptApp.getOAuthToken()},
+          payload: JSON.stringify({requests: [{updateSettings: {
+            settings: {emailCollectionType: 'VERIFIED'}, updateMask: 'emailCollectionType'
+          }}]}),
+          muteHttpExceptions: true
+        });
+        if (response.getResponseCode() !== 200) throw new Error('Não foi possível configurar o e-mail verificado em ' + form.getEditUrl() +
+          ' (Google Forms API HTTP ' + response.getResponseCode() + '). Atualize appsscript.json com o escopo forms.body, autorize novamente e confira a Google Forms API e o acesso de edição.');
+      }
+      assertVerifiedEmail_(form, true); // Confirma por GET, mesmo após um POST bem-sucedido.
+      return {id: id, editUrl: form.getEditUrl(), emailCollectionType: 'VERIFIED', alterado: changed};
+    });
+    return {total: reports.length, alterados: reports.filter(function (report) { return report.alterado; }).length,
+      formularios: reports, proximoPasso: 'Execute conferirSistema e depois abrirInscricoes.'};
+  });
+  console.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
 function assertVerifiedEmail_(form, force) {
   var metadata;
   try { metadata = getFormMetadata_(form, force); }
@@ -432,7 +469,8 @@ function assertVerifiedEmail_(form, force) {
     deactivateUnsafeForms_(form.getId());
     throw new Error('Configure o e-mail verificado no formulário: ' + form.getEditUrl() +
       ' → Configurações → Respostas → Coletar endereços de e-mail → Verificado. ' +
-      'Entrada do participante e perguntas de e-mail digitado não verificam identidade.');
+      'Entrada do participante e perguntas de e-mail digitado não verificam identidade. ' +
+      'Ou execute configurarEmailVerificadoFormularios pela conta instaladora.');
   }
   return metadata;
 }
@@ -443,7 +481,7 @@ function deactivateUnsafeForms_(unsafeFormId) {
   props.deleteProperty('SEMINFO_VERIFIED_SINCE_' + unsafeFormId);
   props.deleteProperty('SEMINFO_FORMS_ACTIVATED');
   getFormSources_().forEach(function (source) {
-    setFormReceiving_(FormApp.openById(source.id), false);
+    setFormReceiving_(openFormWithDriveRetry_(source.id), false);
   });
 }
 
@@ -456,7 +494,7 @@ function verifyForms_(activate) {
   if (shouldCreateCancellationForm_() && !sources.some(function (source) { return source.kind === 'CANCELAMENTO'; })) issues.push('Formulário CANCELAMENTO ainda não instalado.');
   sources.forEach(function (source) {
     var id = source.id, kind = source.kind;
-    var form = FormApp.openById(id);
+    var form = openFormWithDriveRetry_(id);
     try {
       var metadata = assertVerifiedEmail_(form, true);
       preflightForm_(kind, form, source);
@@ -474,7 +512,7 @@ function verifyForms_(activate) {
     }
   });
   if (issues.length) {
-    sources.forEach(function (source) { setFormReceiving_(FormApp.openById(source.id), false); });
+    sources.forEach(function (source) { setFormReceiving_(openFormWithDriveRetry_(source.id), false); });
     throw new Error(issues.join('\n'));
   }
   if (activate === true) {
@@ -507,7 +545,7 @@ function refreshFormsLocked_(state) {
   var available = activities.filter(function (activity) {
     return activity.capacityUnit !== 'equipes' && activity.status === 'aberta' && (confirmedCount[activity.id] || 0) < Number(activity.capacity);
   });
-  var entries = sources.map(function (source) { return {source: source, form: FormApp.openById(source.id)}; });
+  var entries = sources.map(function (source) { return {source: source, form: openFormWithDriveRetry_(source.id)}; });
   var issues = [];
   // A verificação termina para todas as origens antes de abrir qualquer uma.
   // Uma origem insegura revoga a ativação global e nunca reabre a próxima.

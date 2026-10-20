@@ -1,6 +1,14 @@
 function onOpen() {
-  SpreadsheetApp.getUi().createMenu('SEMINFO')
+  var ui;
+  try { ui = SpreadsheetApp.getUi(); }
+  catch (error) {
+    if (!/^(?:Exception:\s*)?Cannot call SpreadsheetApp\.getUi\(\) from this context\.?$/i.test(String(error && error.message || error).trim())) throw error;
+    console.log('Abra ou recarregue a planilha vinculada para exibir o menu SEMINFO. Pelo editor, execute a função administrativa desejada.');
+    return;
+  }
+  ui.createMenu('SEMINFO')
     .addItem('Instalar / reinstalar com segurança', 'instalarSistema')
+    .addItem('Configurar e-mail verificado nos Forms', 'configurarEmailVerificadoFormularios')
     .addItem('Conferir configuração e cotas', 'menuConferir')
     .addItem('Listar perguntas dos Forms existentes', 'menuPerguntasFormularios')
     .addItem('Listar perguntas do Form antigo da CSP', 'menuPerguntasImportacaoCsp')
@@ -32,22 +40,29 @@ function instalarSistema() {
   var current = Session.getEffectiveUser().getEmail().toLowerCase();
   if (!current) throw new Error('A conta instaladora precisa fornecer sua identidade Google ao projeto.');
   var installLock = LockService.getScriptLock();
-  installLock.waitLock(SEMINFO_CONFIG.TEMPO_LOCK_MS);
+  if (!installLock.tryLock(Math.max(SEMINFO_CONFIG.TEMPO_LOCK_MS, 120000))) {
+    throw new Error('Outra execução da SEMINFO mantém o bloqueio. Confira Execuções, aguarde terminar e execute instalarSistema novamente.');
+  }
+  var installToken = pendingOperationToken_();
+  var spreadsheetId;
+  try {
+    assertNoReset_();
+    assertNoPendingOperation_();
+    var previous = props_().getProperty('SEMINFO_INSTALLER');
+    if (previous && previous !== current) throw new Error('Sistema já instalado por outra conta. Utilize a conta original; não crie gatilhos paralelos.');
+    spreadsheetId = props_().getProperty('SEMINFO_ID_PLANILHA') || SEMINFO_CONFIG.ID_PLANILHA;
+    if (!spreadsheetId) {
+      var active = SpreadsheetApp.getActiveSpreadsheet();
+      if (!active) throw new Error('Crie este projeto em Extensões > Apps Script de uma planilha, ou configure ID_PLANILHA.');
+      spreadsheetId = active.getId();
+    }
+    props_().setProperty('SEMINFO_ID_PLANILHA', spreadsheetId);
+    props_().setProperty('SEMINFO_INSTALLER', current);
+    props_().setProperty('SEMINFO_INSTALL_PENDING', installToken);
+  } finally { try { SpreadsheetApp.flush(); } finally { installLock.releaseLock(); } }
+
   var report;
   try {
-  assertNoReset_();
-  var previous = props_().getProperty('SEMINFO_INSTALLER');
-  if (previous && previous !== current) throw new Error('Sistema já instalado por outra conta. Utilize a conta original; não crie gatilhos paralelos.');
-  var spreadsheetId = props_().getProperty('SEMINFO_ID_PLANILHA') || SEMINFO_CONFIG.ID_PLANILHA ||
-    props_().getProperty('1ir3nRnH9ulhZxI4Eu1yP6uvdgFlfWmZ-gs8zlvN-pCE');
-  if (!spreadsheetId) {
-    var active = SpreadsheetApp.getActiveSpreadsheet();
-    if (!active) throw new Error('Crie este projeto em Extensões > Apps Script de uma planilha, ou configure ID_PLANILHA.');
-    spreadsheetId = active.getId();
-  }
-  props_().setProperty('SEMINFO_ID_PLANILHA', spreadsheetId);
-  props_().setProperty('SEMINFO_INSTALLER', current);
-  report = (function() {
     Object.keys(SEMINFO_TABLES).forEach(function(name) { ensureTable_(name, SEMINFO_TABLES[name]); });
     var existing = tableRows_('Configuracoes');
     Object.keys(SEMINFO_CONFIG).forEach(function(key) {
@@ -58,17 +73,21 @@ function instalarSistema() {
     if (Session.getScriptTimeZone() !== 'America/Sao_Paulo') throw new Error('Configure o fuso do projeto como America/Sao_Paulo no manifesto antes de continuar.');
     getTriggerPlan_(); // Confere o espaço para a recuperação antes de alterar Forms.
     var forms = setupForms_();
-    try { forms.abasDeRespostas = nomearAbasDeRespostasLocked_(); }
+    try { forms.abasDeRespostas = nomearAbasDeRespostas_(); }
     catch (error) { forms.issues = (forms.issues || []).concat(['Nomes das abas de respostas: ' + safeError_(error)]); }
-    var journal = readJournal_();
-    rebuildViewsLocked_(journal);
+    var journal = withLock_(function() {
+      var currentJournal = readJournal_();
+      rebuildViewsLocked_(currentJournal);
+      return currentJournal;
+    }, false, true);
     try { refreshFormsLocked_(journal.state); }
     catch (error) { forms.issues = (forms.issues || []).concat([safeError_(error)]); }
     installTriggersLocked_();
     protectOperationalSheetsLocked_();
-    return forms;
-  })();
-  } finally { try { SpreadsheetApp.flush(); } finally { installLock.releaseLock(); } }
+    report = forms;
+  } finally {
+    clearPendingOperation_('SEMINFO_INSTALL_PENDING', installToken);
+  }
   var registrationReports = report.registrations || [{editUrl: report.registrationEditUrl, url: report.registrationUrl}];
   var text = 'Instalação preservada. Configure EMAIL_CA na aba Configuracoes e coleta Verificado em todos os Forms.\n\n' +
     'Inscrições (editar):\n' + registrationReports.map(function(f) { return (f.title ? f.title + ': ' : '') + f.editUrl; }).join('\n') +
@@ -93,7 +112,7 @@ function installTriggersLocked_() {
   specs.forEach(function(spec) {
     if (!keep.some(function(t) { return t.getHandlerFunction() === spec.handler && t.getEventType() === spec.event && (!spec.id || t.getTriggerSourceId() === spec.id); })) {
       var builder = ScriptApp.newTrigger(spec.handler);
-      if (spec.id) builder.forForm(FormApp.openById(spec.id)).onFormSubmit().create();
+      if (spec.id) builder.forForm(openFormWithDriveRetry_(spec.id)).onFormSubmit().create();
       else builder.timeBased().everyMinutes(5).create();
     }
   });
@@ -162,35 +181,36 @@ function validateFixedFormActivities_(state) {
 function encerrarInscricoes() { requireInstaller_(); return changeMode_(false); }
 
 function changeMode_(accepting) {
-  return withLock_(function() {
+  withLock_(function() {
     var journal = readJournal_();
     if (journal.state.accepting !== accepting) {
       commitOperationLocked_(journal, {key: 'ADMIN:MODE:' + Utilities.getUuid(), kind: 'MODE', at: new Date().toISOString(), accepting: accepting});
       journal = readJournal_();
     }
     rebuildViewsLocked_(journal);
-    return refreshFormsLocked_(journal.state);
   });
+  return refreshFormsSafely_();
 }
 
 function atualizarOpcoesFormularios() {
   requireInstaller_();
-  return withLock_(function() { return refreshFormsLocked_(readState_()); });
+  return refreshFormsSafely_();
 }
 
 /** Todas as mudanças de cadastro passam aqui; Atividades é uma visão protegida. */
 function salvarAtividade(activity) {
   requireInstaller_();
   var normalized = SemDomain.validateActivity(activity);
-  return withLock_(function() {
+  var saved = withLock_(function() {
     var journal = readJournal_();
     if (!normalized.capacityUnit && journal.state.activities[normalized.id] && journal.state.activities[normalized.id].capacityUnit) normalized.capacityUnit = journal.state.activities[normalized.id].capacityUnit;
     if (journal.state.activities[normalized.id] && JSON.stringify(journal.state.activities[normalized.id]) === JSON.stringify(normalized)) return normalized;
     commitOperationLocked_(journal, {key: 'ADMIN:CATALOG:' + Utilities.getUuid(), kind: 'CATALOG', at: new Date().toISOString(), activity: normalized});
     journal = readJournal_(); rebuildViewsLocked_(journal);
-    try { refreshFormsLocked_(journal.state); } catch (error) { recordError_('opcoes', '', error); }
     return normalized;
   });
+  try { refreshFormsSafely_(); } catch (error) { recordError_('opcoes', normalized.id, error); }
+  return saved;
 }
 
 function cancelarInscricaoAdministrativa(cpf, activityId, reason) {
@@ -207,9 +227,10 @@ function cancelarInscricaoAdministrativa(cpf, activityId, reason) {
     var outcome = enrichOutcome_(journal.state, request, SemDomain.decide(journal.state, request));
     outcome.changes.forEach(function(c) { c.reason = reason; });
     commitOperationLocked_(journal, {key: key, kind: 'REQUEST', at: now, request: request, outcome: outcome, reason: reason});
-    journal = readJournal_(); rebuildViewsLocked_(journal); refreshFormsLocked_(journal.state);
+    journal = readJournal_(); rebuildViewsLocked_(journal);
     return outcome;
   });
+  refreshFormsSafely_();
   postProcessing_();
   return result;
 }
@@ -311,7 +332,7 @@ function menuAlterarEmail() {
 /** Exclui do catálogo; o Form fixo permanece instalado e fechado. */
 function apagarAtividade(activityId) {
   requireInstaller_();
-  return withLock_(function () {
+  var result = withLock_(function () {
     var journal = readJournal_();
     activityId = String(activityId || '').trim();
     if (!journal.state.activities[activityId]) throw new Error('Atividade inexistente.');
@@ -319,9 +340,10 @@ function apagarAtividade(activityId) {
       at: new Date().toISOString(), activityId: activityId, reason: 'Atividade excluída pela organização.'});
     journal = readJournal_();
     rebuildViewsLocked_(journal);
-    try { refreshFormsLocked_(journal.state); } catch (error) { recordError_('excluir-atividade', activityId, error); }
     return {apagada: activityId};
   });
+  try { refreshFormsSafely_(); } catch (error) { recordError_('excluir-atividade', activityId, error); }
+  return result;
 }
 
 function menuApagarAtividade() {
@@ -330,21 +352,44 @@ function menuApagarAtividade() {
   if (id) SpreadsheetApp.getUi().alert(JSON.stringify(apagarAtividade(id), null, 2));
 }
 
+function openFormWithDriveRetry_(formId) {
+  var lastError;
+  for (var attempt = 0; attempt < 3; attempt++) {
+    try { return FormApp.openById(formId); }
+    catch (error) {
+      lastError = error;
+      var message = String(error && error.message || error);
+      var transientServiceError =
+        /Drive.*(?:tempo limite|timed out|timeout)|(?:tempo limite|timed out|timeout).*Drive/i.test(message) ||
+        /Unexpected error while getting the method or property openById on object FormApp/i.test(message);
+      if (!transientServiceError || attempt === 2) {
+        throw error;
+      }
+      Utilities.sleep(1000 * (attempt + 1));
+    }
+  }
+  throw lastError;
+}
+
 /** Atualiza também instalações existentes; mantém IDs, vínculos e mapeamentos. */
 function prepararFormulariosSeminfo2026() {
   requireInstaller_();
+  var currentConfig = String(getConfig_().FORMULARIOS_INSCRICAO_JSON || '[]');
+  var current = getRegistrationFormDefinitions_();
+  var expected = JSON.parse(SEMINFO_CONFIG.FORMULARIOS_INSCRICAO_JSON);
+  var merged = current.filter(function (entry) { return !!entry.id; });
+  expected.forEach(function (entry) {
+    var existing = merged.find(function (item) { return item.id === entry.id; });
+    if (existing && existing.activityId !== entry.activityId) throw new Error('O Form ' + entry.id + ' já aponta para outra atividade. Preserve seu vínculo antes de continuar.');
+    if (existing) existing.title = entry.title;
+    else merged.push(entry);
+  });
+  // Drive calls can be slow; validate before taking the global lock.
+  merged.forEach(function (entry) { openFormWithDriveRetry_(entry.id).getTitle(); });
   return withLock_(function () {
-    var current = getRegistrationFormDefinitions_();
-    var expected = JSON.parse(SEMINFO_CONFIG.FORMULARIOS_INSCRICAO_JSON);
-    var merged = current.filter(function (entry) { return !!entry.id; });
-    expected.forEach(function (entry) {
-      var existing = merged.find(function (item) { return item.id === entry.id; });
-      if (existing && existing.activityId !== entry.activityId) throw new Error('O Form ' + entry.id + ' já aponta para outra atividade. Preserve seu vínculo antes de continuar.');
-      if (existing) existing.title = entry.title;
-      else merged.push(entry);
-    });
-    // Confere acesso a todos antes de persistir a nova configuração.
-    merged.forEach(function (entry) { FormApp.openById(entry.id).getTitle(); });
+    if (String(getConfig_().FORMULARIOS_INSCRICAO_JSON || '[]') !== currentConfig) {
+      throw new Error('A configuração dos Forms mudou durante a validação. Execute a preparação novamente.');
+    }
     setConfig_('FORMULARIOS_INSCRICAO_JSON', JSON.stringify(merged));
     return merged;
   });
@@ -371,7 +416,7 @@ function programacaoSeminfo2026_() {
     item('PALESTRA_BIO', '2026-10-27', '', '', 'Palestra Bio', 'palestra', '', 'Auditório H', null, 'Início, término, capacidade e ministrante.'),
     item('OFICINA_SEGURANCA', '2026-10-28', '13:00', '17:00', 'Oficina Segurança da Informação', 'oficina', 'Rafaela', 'Sala 15 — a confirmar', 30, 'Confirmar sala 15.'),
     item('PALESTRA_DANIELE', '2026-10-28', '19:30', '', 'Palestra Online — Daniele Tavares', 'palestra', 'Daniele Tavares', 'Online', null, 'Término e capacidade.'),
-    item('CSP_2026', '2026-10-29', '13:00', '16:00', 'Competição Seminfo de Programação — CSP', 'competicao', '', '', null, 'Local e capacidade em equipes; manter importação de equipes separada.'),
+    item('CSP_2026', '2026-10-29', '13:00', '16:00', 'Competição Seminfo de Programação — CSP', 'competicao', '', 'Prédio da Informática', 60),
     item('ENCERRAMENTO_2026', '2026-10-29', '16:00', '17:00', 'Encerramento', '', '', 'Auditório H', null, 'Sem Form de inscrição informado.'),
     item('PALESTRA_JOHNATAN', '2026-10-29', '19:30', '', 'Palestra Online — Johnatan UFLA', 'palestra', 'Johnatan UFLA', 'Online', null, 'Término e capacidade.')
   ];
@@ -445,10 +490,43 @@ function responseSheetMatchesForm_(sheet, form) {
 }
 
 /** As abas nativas também passam a exibir a atividade, em vez de Formulário 3. */
-function nomearAbasDeRespostasLocked_() {
+function nomearAbasDeRespostas_() {
   var result = [];
-  getFormSources_().forEach(function (source) {
-    var form = FormApp.openById(source.id), destination = formDestinationId_(form);
+  var sources = getFormSources_();
+  var importConfig = String(getConfig_().IMPORTACAO_CSP_JSON || '').trim();
+  var config = getConfig_();
+  var cspSource = null;
+  if (importConfig && importConfig !== '{}') {
+    cspSource = getCspImportSource_();
+    var activity = readState_().activities[cspSource.activityId];
+    var scheduledActivity = programacaoSeminfo2026_().filter(function (entry) { return entry.id === cspSource.activityId; })[0];
+    var cspTitle = activity && activity.title || scheduledActivity && scheduledActivity.title || '';
+    var existingSource = sources.filter(function (source) { return source.id === cspSource.formId; })[0];
+    if (existingSource) {
+      existingSource.title = cspTitle || existingSource.title;
+    } else {
+      sources.push({kind: 'IMPORTACAO_CSP', id: cspSource.formId, title: cspTitle});
+    }
+  }
+  sources.forEach(function (source) {
+    var form = openFormWithDriveRetry_(source.id);
+    if (cspSource && source.id === cspSource.formId && config.CSP_RESPONSE_SPREADSHEET_ID && config.CSP_RESPONSE_SHEET_ID) {
+      var targetId = Number(config.CSP_RESPONSE_SHEET_ID);
+      if (!Number.isInteger(targetId) || targetId < 1) throw new Error('CSP_RESPONSE_SHEET_ID inválido na aba Configuracoes.');
+      var targetSpreadsheet = SpreadsheetApp.openById(String(config.CSP_RESPONSE_SPREADSHEET_ID));
+      var targetSheet = targetSpreadsheet.getSheets().filter(function (sheet) { return sheet.getSheetId() === targetId; })[0];
+      if (!targetSheet) throw new Error('A guia configurada para respostas da CSP não foi encontrada na planilha informada.');
+      if (!responseSheetMatchesForm_(targetSheet, form)) {
+        throw new Error('A guia configurada para respostas da CSP não está vinculada ao Form ' + cspSource.formId + '. Nenhuma guia foi renomeada.');
+      }
+      var cspBase = ('Respostas — ' + (source.title || form.getTitle())).replace(/[\\/?*\[\]:]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 100);
+      var cspCollision = targetSpreadsheet.getSheets().some(function (sheet) { return sheet.getName() === cspBase && sheet.getSheetId() !== targetId; });
+      var cspName = cspCollision ? cspBase.slice(0, 78) + ' ' + targetId : cspBase;
+      if (targetSheet.getName() !== cspName) targetSheet.setName(cspName);
+      result.push({formId: source.id, aba: cspName, planilha: targetSpreadsheet.getId()});
+      return;
+    }
+    var destination = formDestinationId_(form);
     if (!destination) return;
     var spreadsheet = SpreadsheetApp.openById(destination);
     var title = source.kind === 'CANCELAMENTO' ? 'Cancelamentos — SEMINFO' : source.title || form.getTitle();
@@ -465,7 +543,7 @@ function nomearAbasDeRespostasLocked_() {
 }
 
 function sincronizarNomesAbasDeRespostas_() {
-  return withLock_(function () { return nomearAbasDeRespostasLocked_(); });
+  return nomearAbasDeRespostas_();
 }
 
 function protectResetBackup_(copy) {
@@ -494,7 +572,7 @@ function limparTudoERecomecar() {
       try { importConfig = JSON.parse(String(getConfig_().IMPORTACAO_CSP_JSON || '{}')); }
       catch (_) { throw new Error('IMPORTACAO_CSP_JSON inválido; corrija a configuração antes de limpar.'); }
       if (importConfig.formId && !sources.some(function (source) { return source.id === importConfig.formId; })) sources.push({id: importConfig.formId, kind: 'IMPORTACAO_CSP'});
-      var forms = sources.map(function (source) { return FormApp.openById(source.id); });
+      var forms = sources.map(function (source) { return openFormWithDriveRetry_(source.id); });
       // Uma mensagem já reservada pode estar sendo enviada fora do ScriptLock.
       var queueSheet = db_().getSheetByName('FilaEmails');
       if (queueSheet && queueSheet.getLastRow() > 1 && typeof notificationRows_ === 'function' && notificationRows_(queueSheet).some(function (row) {
@@ -535,15 +613,15 @@ function limparTudoERecomecar() {
     if (preservedImportFormId && plan.formIds.indexOf(preservedImportFormId) >= 0) {
       plan.clearFormIds = plan.clearFormIds.filter(function (id) { return id !== preservedImportFormId; });
       plan.preservedImportFormId = preservedImportFormId;
-      var preservedForm = FormApp.openById(preservedImportFormId);
+      var preservedForm = openFormWithDriveRetry_(preservedImportFormId);
       plan.targets = plan.targets.filter(function (target) {
         var sheet = SpreadsheetApp.openById(target.spreadsheetId).getSheetByName(target.sheetName);
         return !sheet || !responseSheetMatchesForm_(sheet, preservedForm);
       });
       properties.setProperty('SEMINFO_RESET_PENDING', JSON.stringify(plan));
     }
-    var resetForms = plan.formIds.map(function (id) { return FormApp.openById(id); });
-    var clearForms = plan.clearFormIds.map(function (id) { return FormApp.openById(id); });
+    var resetForms = plan.formIds.map(openFormWithDriveRetry_);
+    var clearForms = plan.clearFormIds.map(openFormWithDriveRetry_);
     resetForms.forEach(function (form) { setFormReceiving_(form, false); });
     properties.deleteProperty('SEMINFO_FORMS_ACTIVATED');
     if (plan.phase === 'backup') {

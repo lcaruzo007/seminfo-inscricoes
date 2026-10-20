@@ -7,6 +7,8 @@ var SEMINFO_CONFIG = Object.freeze({
   ID_FORM_INSCRICAO: '',
   ID_FORM_CANCELAMENTO: '1jb4dGQGcCpQyrLthWvCakBtkED8SwG2UC2k3LxoI9eI',
   URL_FORM_CANCELAMENTO_EMAIL: '',
+  CSP_RESPONSE_SPREADSHEET_ID: '1tFSDmBp9wsCskM0dIF_ax9-CM6upvodHAYL0xi2QhrA',
+  CSP_RESPONSE_SHEET_ID: '858916137',
   IMPORTACAO_CSP_JSON: JSON.stringify({formId: '1oXixuiIIJ1sGVdTgs0uEQVSEaqxEO5NqupTi-4xv2ww', activityId: 'CSP_2026', schema: 'equipes',
     items: {TEAM_TYPE: 742351656, TEAM_NAME: 396811097, TEAM_SIZE: 1358170985, MEMBER1: 98572697, MEMBER2: 1537440165, MEMBER3: 1869818828}}),
   FORMULARIOS_INSCRICAO_JSON: JSON.stringify([
@@ -24,7 +26,7 @@ var SEMINFO_CONFIG = Object.freeze({
   CRIAR_FORM_CANCELAMENTO: true,
   MAX_EMAILS_POR_EXECUCAO: 10,
   MAX_SOLICITACOES_POR_EXECUCAO: 30,
-  TEMPO_LOCK_MS: 20000,
+  TEMPO_LOCK_MS: 30000,
   FUSO: 'America/Sao_Paulo'
 });
 
@@ -123,14 +125,40 @@ function setConfig_(key, value) {
   sheet.getRange(rowNumber, 1, 1, 2).setNumberFormat('@').setValues([[key, safeCell_(String(value))]]);
 }
 
-function withLock_(fn, allowReset) {
+function withLock_(fn, allowReset, allowPendingOperation) {
   var lock = LockService.getScriptLock();
   lock.waitLock(getConfig_().TEMPO_LOCK_MS);
   try {
     if (!allowReset) assertNoReset_();
+    if (!allowPendingOperation) assertNoPendingOperation_();
     return fn();
   }
   finally { try { SpreadsheetApp.flush(); } finally { lock.releaseLock(); } }
+}
+
+function pendingOperationToken_() {
+  return String(Date.now()) + '|' + Math.random().toString(36).slice(2);
+}
+
+function clearPendingOperation_(key, token) {
+  var properties = props_();
+  if (properties.getProperty(key) === token) properties.deleteProperty(key);
+}
+
+function assertNoPendingOperation_() {
+  var properties = props_();
+  var keys = ['SEMINFO_INSTALL_PENDING', 'SEMINFO_FORM_REFRESH_PENDING'];
+  keys.forEach(function(key) {
+    var value = properties.getProperty(key);
+    if (!value) return;
+    var startedAt = Number(String(value).split('|')[0]);
+    if (Number.isFinite(startedAt) && Date.now() - startedAt > 480000) {
+      properties.deleteProperty(key);
+      return;
+    }
+    var operation = key === 'SEMINFO_INSTALL_PENDING' ? 'instalação' : 'atualização dos Forms';
+    throw new Error('Há uma ' + operation + ' em andamento ou interrompida. Aguarde e tente novamente.');
+  });
 }
 
 function assertNoReset_() {
@@ -141,7 +169,10 @@ function requireInstaller_(allowReset) {
   var installer = props_().getProperty('SEMINFO_INSTALLER');
   var email = Session.getEffectiveUser().getEmail().toLowerCase();
   if (!installer || !email || installer !== email) throw new Error('Esta operação deve ser executada pela conta que instalou o sistema.');
-  if (!allowReset) assertNoReset_();
+  if (!allowReset) {
+    assertNoReset_();
+    assertNoPendingOperation_();
+  }
 }
 
 function validateMailConfig_() {

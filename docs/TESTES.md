@@ -2,13 +2,13 @@
 
 ## Executados localmente
 
-Em 20/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **142 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
+Em 20/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **165 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
 
 | Suíte | Testes | Evidência |
 |---|---:|---|
 | `tests/domain.test.cjs` | 30 | Regras puras de CPF, identidade, vagas, intervalos, trocas, replay e administração |
 | `tests/notifications.test.cjs` | 19 | Cota incluindo CC, deduplicação, leases, falhas, modelos, prazo e duplicação após envio interrompido |
-| `tests/forms-install.test.cjs` | 78 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
+| `tests/forms-install.test.cjs` | 101 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
 | `tests/persistence.test.cjs` | 15 | Injeção de falhas antes/depois do append, recuperação, corrupção e releitura sob lock simulado |
 
 As suítes usam `node:test`/`assert`, `vm` e `crypto`, todos nativos do Node, e carregam os módulos de `src/`. Execute cada arquivo na raiz do projeto conforme o [README](../README.md). São apropriados também para ambientes que não permitem subprocessos do executor `node --test`. O empacotamento gera `dist/test-results.txt` com a saída da execução final; os relatórios e pacotes de `dist/` ficam fora do Git.
@@ -21,9 +21,13 @@ O cadastro completo cobre as 18 atividades, incluindo abertura e palestras pende
 
 A suíte de Forms também reproduz a falha da mensagem opcional de fechamento em português e inglês durante fechamento e reabertura de Forms publicados. Confere que esse erro isolado permite continuar, que outros erros não são ignorados e que falhas reais em publicação/recebimento informam a etapa e o ID do Form. Os IDs da configuração de produção são substituídos apenas no ambiente simulado dos testes.
 
+A configuração administrativa de e-mail verificado cobre vários Forms, incluindo cancelamento e coleta desativada, repetição sem novas escritas e preservação de IDs, perguntas, respostas e inscrições. Confere a releitura após atualização, falhas HTTP, recusa de alteração por outra conta, Forms fechados até a abertura e quarentena das respostas anteriores à correção. `onOpen` cria o menu com interface e orienta pelo log quando executado sem ela, propagando erros diferentes. A alteração real de `emailCollectionType` pela API ainda exige homologação no Google.
+
 A política de notificações é verificada com confirmação sem CC, problemas com CC, aviso direto ao CA na última vaga, deduplicação, prioridade com cota curta, nova lotação após cancelamento, troca entre atividades, redução de capacidade e remoção do CC de sucessos pendentes. Um teste de integração carrega também `Notifications.gs` real junto do livro de operações e confere confirmação, conflito e aviso de capacidade sem repetir envios na reconstrução.
 
 A importação administrativa da CSP tem testes de prévia sem efeitos sobre inscrições/e-mails, restrição à conta instaladora, origem auditada de e-mail informado, lotes retomáveis, duplicidade, lotação, CPF inválido, identidade incompatível, conflito sem autorizar troca, prévia invalidada por edição das respostas ou mudança do estado, data-limite da prévia, detecção de perguntas e mapeamentos ambíguos. Também testa a recuperação por uma aba de backup e a preservação das respostas da fonte CSP durante a limpeza completa. A integração com a fila real confere confirmação sem CC e aviso de capacidade ao CA, preservando a exigência de coleta nativa nos gatilhos normais.
+
+A recuperação de uma cópia de `IntegrantesEquipes` testa o agrupamento por ID original, CPF com zero inicial, coach, texto multilinha, origem e ausência de data/situação histórica. Cobre restauração sem respostas ou perguntas, backup protegido que não é sobrescrito, inclusão de novas respostas preservando equipes recuperadas, deduplicação entre cópia e Form, manutenção de cancelamentos, recusa de IDs divergentes, pendências de CPF/coach e bloqueio após alterações na fonte. Dados pessoais usados para preparar uma entrega privada ficam em `dist/`, fora dos testes e do ZIP do projeto.
 
 ## Correspondência com os 16 requisitos de teste
 

@@ -187,9 +187,9 @@
     "title": "Competição Seminfo de Programação — CSP",
     "type": "competicao",
     "instructor": "",
-    "location": "",
-    "capacity": null,
-    "pending": "Local e capacidade em equipes; manter importação de equipes separada."
+    "location": "Prédio da Informática",
+    "capacity": 60,
+    "pending": ""
   },
   {
     "id": "ENCERRAMENTO_2026",

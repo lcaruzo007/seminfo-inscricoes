@@ -17,6 +17,11 @@ function getCspImportSource_() {
       (typeof source.backupSheetName !== 'string' || !source.backupSheetName.trim() || source.backupSheetName.length > 100)) {
     throw new Error('backupSheetName deve ser o nome de uma aba de backup com até 100 caracteres.');
   }
+  if (source.backupTeamSheetName !== undefined &&
+      (typeof source.backupTeamSheetName !== 'string' || !source.backupTeamSheetName.trim() || source.backupTeamSheetName.length > 100)) {
+    throw new Error('backupTeamSheetName deve ser o nome da aba de backup Equipes com até 100 caracteres.');
+  }
+  if (source.includeLiveResponses !== undefined && typeof source.includeLiveResponses !== 'boolean') throw new Error('includeLiveResponses deve ser true ou false.');
   source.items = source.items || {};
   if (typeof source.items !== 'object' || Array.isArray(source.items)) throw new Error('items deve conter os IDs das perguntas.');
   var allowed = source.schema === 'equipes' ? ['TEAM_TYPE', 'TEAM_NAME', 'TEAM_SIZE', 'MEMBER1', 'MEMBER2', 'MEMBER3'] : ['NAME', 'CPF', 'EMAIL'];
@@ -25,6 +30,144 @@ function getCspImportSource_() {
     source.items = Object.assign({TEAM_TYPE: 742351656, TEAM_NAME: 396811097, TEAM_SIZE: 1358170985, MEMBER1: 98572697, MEMBER2: 1537440165, MEMBER3: 1869818828}, source.items);
   }
   return source;
+}
+
+/** Recupera equipes pelo detalhe dos integrantes e, opcionalmente, pelos metadados da aba Equipes. */
+function cspRequestsFromMemberBackup_(source, rows, recoveredAt, teamRows) {
+  var headers = SEMINFO_TABLES.IntegrantesEquipes;
+  if (!rows.length || JSON.stringify(rows[0].map(String)) !== JSON.stringify(headers)) {
+    throw new Error('Backup de integrantes CSP com cabeçalho incompatível. Esperado: ' + headers.join(', ') + '.');
+  }
+  if (!isFinite(Date.parse(recoveredAt))) throw new Error('Data da recuperação inválida.');
+  var teamsById = {};
+  if (teamRows) {
+    var teamHeaders = SEMINFO_TABLES.Equipes;
+    if (!teamRows.length || JSON.stringify(teamRows[0].map(String)) !== JSON.stringify(teamHeaders)) {
+      throw new Error('Backup de Equipes com cabeçalho incompatível. Esperado: ' + teamHeaders.join(', ') + '.');
+    }
+    teamRows.slice(1).forEach(function(row, index) {
+      if (!row.some(function(value) { return value !== '' && value !== null; })) return;
+      if (row.length !== teamHeaders.length) throw new Error('Backup de Equipes com número de colunas inválido na linha ' + (index + 2) + '.');
+      row = row.map(function(value) { return value === null || value === undefined ? '' : String(value).trim(); });
+      if (!/^[A-Za-z0-9_-]+:[A-Za-z0-9_-]+:equipe$/.test(row[0]) || row[0].indexOf(source.formId + ':') !== 0) {
+        throw new Error('ID de equipe incompatível com o Form CSP na linha ' + (index + 2) + '.');
+      }
+      if (row[1] !== source.activityId) throw new Error('Atividade incompatível na linha ' + (index + 2) + ' da aba Equipes.');
+      if (row[6].toLowerCase() !== 'confirmada') throw new Error('A equipe ' + row[0] + ' não está confirmada na versão histórica; confira a situação antes de recuperar.');
+      if (!isFinite(Date.parse(row[7]))) throw new Error('Data CRIADA_EM inválida na linha ' + (index + 2) + ' da aba Equipes.');
+      if (!/^\d+$/.test(row[5]) || Number(row[5]) < 1) throw new Error('QTD_INTEGRANTES inválida na linha ' + (index + 2) + ' da aba Equipes.');
+      if (teamsById[row[0]]) throw new Error('ID de equipe repetido na aba Equipes: ' + row[0] + '.');
+      teamsById[row[0]] = {id: row[0], activityId: row[1], teamName: row[2], teamType: row[3],
+        coachCpf: row[4], declaredSize: Number(row[5]), status: row[6].toLowerCase(), createdAt: new Date(row[7]).toISOString()};
+    });
+  }
+  var groups = {}, order = [];
+  rows.slice(1).forEach(function (row, index) {
+    if (!row.some(function (value) { return value !== '' && value !== null; })) return;
+    if (row.length !== headers.length) throw new Error('Backup de integrantes com número de colunas inválido na linha ' + (index + 2) + '.');
+    row = row.map(function (value) { return value === null || value === undefined ? '' : String(value); });
+    var id = row[0].trim(), prefix = source.formId + ':';
+    if (id.indexOf(prefix) !== 0 || !/:equipe$/.test(id) || !/^[A-Za-z0-9_-]+$/.test(id.slice(prefix.length, -7))) {
+      throw new Error('EQUIPE_ID incompatível com o Form CSP na linha ' + (index + 2) + '.');
+    }
+    if (!groups[id]) { groups[id] = {id: id, name: row[1].trim(), members: [], errors: []}; order.push(id); }
+    var group = groups[id], role = row[4].trim().toLowerCase(), cpf = row[2].trim();
+    if (group.name !== row[1].trim()) throw new Error('Nomes de equipe divergentes para o mesmo EQUIPE_ID na linha ' + (index + 2) + '.');
+    if (role !== 'coach' && role !== 'integrante') group.errors.push('Papel inválido na linha ' + (index + 2) + '.');
+    try { cpf = SemDomain.normalizeCpf(cpf); }
+    catch (_) { group.errors.push('CPF inválido na linha ' + (index + 2) + '; preserve os zeros iniciais.'); }
+    group.members.push({cpf: cpf, name: row[3].trim(), role: role, turma: row[5], telefone: row[6], raw: row[7]});
+  });
+  var requests = order.map(function (id) {
+    var group = groups[id], key = id.slice(0, -7);
+    var summary = teamsById[id];
+    if (teamRows && !summary) throw new Error('Equipe sem linha correspondente na aba Equipes: ' + id + '.');
+    if (summary) {
+      if (summary.teamName !== group.name) throw new Error('Nome divergente entre Equipes e IntegrantesEquipes para ' + id + '.');
+      if (summary.declaredSize !== group.members.length) throw new Error('QTD_INTEGRANTES divergente dos membros para ' + id + '.');
+      if (summary.coachCpf) {
+        var summaryCoachCpf;
+        try { summaryCoachCpf = SemDomain.normalizeCpf(summary.coachCpf); }
+        catch (_) { throw new Error('COACH_CPF inválido na aba Equipes para ' + id + '.'); }
+        if (summaryCoachCpf !== group.members.filter(function(member) { return member.role === 'coach'; })[0].cpf) {
+          throw new Error('COACH_CPF divergente dos integrantes para ' + id + '.');
+        }
+      }
+    }
+    if (teamsById[id]) delete teamsById[id];
+    if (group.members.filter(function (member) { return member.role === 'coach'; }).length !== 1) group.errors.push('A equipe precisa ter exatamente um coach.');
+    group.members.sort(function (a, b) { return Number(b.role === 'coach') - Number(a.role === 'coach'); });
+    var submittedAt = summary ? summary.createdAt : recoveredAt;
+    return {key: key, kind: 'INSCRICAO_EQUIPE', cpf: group.members[0].cpf, name: group.name, email: '',
+      activityId: source.activityId, teamName: group.name, teamType: summary ? summary.teamType : '', members: group.members,
+      declaredSize: summary ? summary.declaredSize : null,
+      rawMembers: group.members.map(function (member) { return member.raw; }), invalidAnswer: group.errors.length > 0,
+      importErrors: group.errors, protocol: protocol_(key), submittedAt: submittedAt, recoveredAt: recoveredAt,
+      originalSubmittedAt: summary ? summary.createdAt : null, originalStatus: summary ? summary.status : null,
+      backupSheetName: source.backupSheetName || '', backupTeamSheetName: source.backupTeamSheetName || '',
+      formId: source.formId, responseId: key.slice(source.formId.length + 1),
+      identitySource: summary ? 'RECUPERACAO_ADMINISTRATIVA_BACKUP_COMPLETO' : 'RECUPERACAO_ADMINISTRATIVA_BACKUP_INTEGRANTES'};
+  });
+  if (teamRows && Object.keys(teamsById).length) throw new Error('Há equipes sem integrantes correspondentes na aba IntegrantesEquipes.');
+  return {requests: requests, items: {}, signature: hash_(JSON.stringify(requests)), missingOriginalMetadata: !teamRows};
+}
+
+function readCspMemberBackup_(source, until) {
+  if (!source.backupSheetName) return null;
+  var sheet = db_().getSheetByName(source.backupSheetName);
+  if (!sheet) throw new Error('Aba de backup CSP não encontrada: ' + source.backupSheetName + '.');
+  var rows = sheet.getDataRange().getDisplayValues();
+  if (!rows.length || rows[0][0] !== 'EQUIPE_ID') return null;
+  var teamRows = null;
+  if (source.backupTeamSheetName) {
+    var teamSheet = db_().getSheetByName(source.backupTeamSheetName);
+    if (!teamSheet) throw new Error('Aba de backup Equipes não encontrada: ' + source.backupTeamSheetName + '.');
+    teamRows = teamSheet.getDataRange().getDisplayValues();
+  }
+  return cspRequestsFromMemberBackup_(source, rows, until, teamRows);
+}
+
+/** Cria uma fonte privada imutável; inscrições só entram após conferir a prévia. */
+function prepararRecuperacaoEquipesCsp(rows, teamRows) {
+  requireInstaller_();
+  if (!Array.isArray(rows) || rows.some(function (row) { return !Array.isArray(row); })) throw new Error('Informe as linhas do backup de integrantes CSP.');
+  if (teamRows !== undefined && (!Array.isArray(teamRows) || teamRows.some(function(row) { return !Array.isArray(row); }))) {
+    throw new Error('Informe as linhas da aba Equipes como uma matriz de valores.');
+  }
+  var source = getCspImportSource_();
+  if (source.schema !== 'equipes') throw new Error('A recuperação de integrantes exige schema equipes em IMPORTACAO_CSP_JSON.');
+  cspRequestsFromMemberBackup_(source, rows, new Date().toISOString(), teamRows);
+  var hash = hash_(JSON.stringify({members: rows, teams: teamRows || null})).slice(0, 12);
+  var name = 'Backup_CSP_Salvo_' + hash;
+  var teamName = teamRows ? name + '_Equipes' : '';
+  withLock_(function () {
+    var existing = db_().getSheetByName(name);
+    if (existing) {
+      var saved = existing.getDataRange().getDisplayValues();
+      if (saved.length !== rows.length || rows.some(function (row, i) {
+        return saved[i].length !== row.length || row.some(function (value, j) { return saved[i][j] !== String(value) && saved[i][j] !== safeCell_(String(value)); });
+      })) throw new Error('O backup salvo já existe com conteúdo diferente; nenhuma linha foi sobrescrita.');
+    } else writeTable_(name, SEMINFO_TABLES.IntegrantesEquipes, rows.slice(1));
+    protectResetBackup_(db_().getSheetByName(name));
+    if (teamRows) {
+      var existingTeams = db_().getSheetByName(teamName);
+      if (existingTeams) {
+        var savedTeams = existingTeams.getDataRange().getDisplayValues();
+        if (savedTeams.length !== teamRows.length || teamRows.some(function(row, i) {
+          return savedTeams[i].length !== row.length || row.some(function(value, j) {
+            return savedTeams[i][j] !== String(value) && savedTeams[i][j] !== safeCell_(String(value));
+          });
+        })) throw new Error('O backup salvo de Equipes já existe com conteúdo diferente; nenhuma linha foi sobrescrita.');
+      } else writeTable_(teamName, SEMINFO_TABLES.Equipes, teamRows.slice(1));
+      protectResetBackup_(db_().getSheetByName(teamName));
+    }
+    setConfig_('IMPORTACAO_CSP_JSON', JSON.stringify(Object.assign({}, source, {
+      backupSheetName: name, backupTeamSheetName: teamRows ? teamName : undefined, includeLiveResponses: true
+    })));
+  });
+  var report = prepararImportacaoCsp();
+  console.log(JSON.stringify(report, null, 2));
+  return report;
 }
 
 function getCspImportResponses_(source, form, itemIds) {
@@ -92,7 +235,7 @@ function assertCspImportDestination_(state, source) {
 
 function listarPerguntasImportacaoCsp() {
   requireInstaller_();
-  var source = getCspImportSource_(), form = FormApp.openById(source.formId);
+  var source = getCspImportSource_(), form = openFormWithDriveRetry_(source.formId);
   var report = {formId: source.formId, activityId: source.activityId, title: form.getTitle(),
     items: form.getItems().map(function (item) { return {id: item.getId(), title: item.getTitle(), type: String(item.getType())}; })};
   console.log(JSON.stringify(report, null, 2));
@@ -160,7 +303,21 @@ function parseCspTeamMember_(raw, number) {
 }
 
 function readCspTeamRequests_(source, until) {
-  var form = FormApp.openById(source.formId), items = {}, used = {};
+  var backup = readCspMemberBackup_(source, until);
+  if (backup) {
+    if (source.includeLiveResponses === true) {
+      var liveSource = Object.assign({}, source), known = {};
+      delete liveSource.backupSheetName;
+      backup.requests.forEach(function (request) { known[request.key] = true; });
+      var live = readCspTeamRequests_(liveSource, until);
+      // A cópia recuperada mantém seus dados; novas respostas entram depois dela.
+      backup.requests = backup.requests.concat(live.requests.filter(function (request) { return !known[request.key]; }));
+      backup.items = live.items;
+      backup.signature = hash_(JSON.stringify(backup.requests));
+    }
+    return backup;
+  }
+  var form = openFormWithDriveRetry_(source.formId), items = {}, used = {};
   ['TEAM_NAME', 'TEAM_TYPE', 'TEAM_SIZE', 'MEMBER1', 'MEMBER2', 'MEMBER3'].forEach(function (key) {
     var itemId = Number(source.items[key]), item = Number.isInteger(itemId) && itemId > 0 ? form.getItemById(itemId) : null;
     var types = key === 'TEAM_SIZE' || key === 'TEAM_TYPE' ? ['MULTIPLE_CHOICE', 'LIST', 'TEXT'] : ['TEXT', 'PARAGRAPH_TEXT'];
@@ -205,7 +362,7 @@ function readCspTeamRequests_(source, until) {
 
 function readCspImportRequests_(source, until) {
   if (source.schema === 'equipes') return readCspTeamRequests_(source, until);
-  var form = FormApp.openById(source.formId), items = resolveCspImportItems_(source, form);
+  var form = openFormWithDriveRetry_(source.formId), items = resolveCspImportItems_(source, form);
   var limit = new Date(until).getTime();
   if (!isFinite(limit)) throw new Error('Data da prévia inválida.');
   var requests = getCspImportResponses_(source, form, items).filter(function (response) {
@@ -237,7 +394,9 @@ function cspImportOutcome_(state, request) {
 function cspImportOperation_(request, outcome) {
   return {key: request.key, kind: 'REQUEST', at: new Date().toISOString(), request: request, outcome: outcome,
     importedBy: props_().getProperty('SEMINFO_INSTALLER'),
-    reason: request.kind === 'INSCRICAO_EQUIPE' ? 'Importação administrativa de equipe; integrantes conferidos pela organização. Form original sem campo de e-mail.' :
+    reason: request.recoveredAt && !request.originalSubmittedAt ? 'Recuperação administrativa da cópia de IntegrantesEquipes. Data original, tipo e situação anterior ausentes; equipe reavaliada pelas regras atuais.' :
+      request.recoveredAt ? 'Recuperação administrativa das cópias históricas Equipes e IntegrantesEquipes. Data, tipo e situação original preservados; equipe reavaliada pelas regras atuais.' :
+      request.kind === 'INSCRICAO_EQUIPE' ? 'Importação administrativa de equipe; integrantes conferidos pela organização. Form original sem campo de e-mail.' :
       'Importação de respostas anteriores ao sistema; dados conferidos pela organização. E-mail originalmente informado pelo participante.'};
 }
 
@@ -260,12 +419,13 @@ function prepararImportacaoCsp() {
         state = SemDomain.applyOperation(state, cspImportOperation_(request, outcome));
         counts[code] = (counts[code] || 0) + 1;
       }
-      if (source.schema === 'equipes') rows.push([request.protocol, request.responseId, request.submittedAt, request.teamName, request.teamType,
-        request.members.length, JSON.stringify(request.members), request.rawMembers.join('\n\n'), code, message]);
+      if (source.schema === 'equipes') rows.push([request.protocol, request.responseId,
+        request.originalSubmittedAt || (request.recoveredAt ? '' : request.submittedAt), request.teamName, request.teamType,
+        request.members.length, JSON.stringify(request.members), request.rawMembers.join('\n\n'), code, message, request.recoveredAt || '', request.identitySource]);
       else rows.push([request.protocol, request.submittedAt, request.name, request.cpf, request.email, code, message]);
     });
     var name = 'Previa_CSP_' + Utilities.getUuid().slice(0, 8);
-    var headers = source.schema === 'equipes' ? ['PROTOCOLO', 'RESPOSTA_ID', 'RECEBIDA_EM', 'EQUIPE', 'TIPO_EQUIPE', 'QTD_IDENTIFICADA', 'INTEGRANTES_JSON', 'TEXTOS_ORIGINAIS', 'RESULTADO_PREVISTO', 'DETALHE'] :
+    var headers = source.schema === 'equipes' ? ['PROTOCOLO', 'RESPOSTA_ID', 'RECEBIDA_EM', 'EQUIPE', 'TIPO_EQUIPE', 'QTD_IDENTIFICADA', 'INTEGRANTES_JSON', 'TEXTOS_ORIGINAIS', 'RESULTADO_PREVISTO', 'DETALHE', 'RECUPERADA_EM', 'ORIGEM'] :
       ['PROTOCOLO', 'RECEBIDA_EM', 'NOME', 'CPF', 'EMAIL_INFORMADO', 'RESULTADO_PREVISTO', 'DETALHE'];
     writeTable_(name, headers, rows);
     var sheet = db_().getSheetByName(name), installer = props_().getProperty('SEMINFO_INSTALLER');
@@ -280,6 +440,8 @@ function prepararImportacaoCsp() {
     return {formId: source.formId, activityId: source.activityId, total: data.requests.length, jaProcessadas: already,
       resultadosPrevistos: counts, ocupacaoPrevista: SemDomain.occupancy(state, source.activityId), unidadeCapacidade: source.schema === 'equipes' ? 'equipes' : 'pessoas',
       formularioIntegrado: getFormSources_().some(function (entry) { return entry.kind === 'INSCRICAO' && entry.id === source.formId; }),
+      backupSheetName: source.backupSheetName || '',
+      avisoRecuperacao: data.missingOriginalMetadata ? 'A cópia não contém data original, tipo ou situação anterior das equipes. Confira a prévia; a recuperação registra a data atual e respeita vagas e conflitos.' : '',
       previaUrl: db_().getUrl() + '#gid=' + sheet.getSheetId()};
   });
 }
@@ -324,17 +486,11 @@ function importarInscricoesAnterioresCsp() {
     processed++; counts[result] = (counts[result] || 0) + 1;
     if (processed >= maximum) break;
   }
+  var issues = [];
   var report = withLock_(function () {
     assertGeneration();
     var journal = readJournal_();
     rebuildViewsLocked_(journal);
-    var issues = [];
-    try { refreshFormsLocked_(journal.state); }
-    catch (error) { recordError_('importacao-csp-formularios', '', error); issues.push(safeError_(error)); }
-    if (source.schema === 'equipes' && SemDomain.occupancy(journal.state, source.activityId) >= journal.state.activities[source.activityId].capacity) {
-      try { setFormReceiving_(FormApp.openById(source.formId), false); }
-      catch (error) { recordError_('importacao-csp-lotacao', '', error); issues.push(safeError_(error)); }
-    }
     var pendingReview = 0;
     var remaining = data.requests.filter(function (request) {
       if (journal.byKey[request.key]) return false;
@@ -346,6 +502,18 @@ function importarInscricoesAnterioresCsp() {
       pendentesConferencia: pendingReview, atividade: source.activityId,
       formularioIntegrado: getFormSources_().some(function (entry) { return entry.kind === 'INSCRICAO' && entry.id === source.formId; }), pendencias: issues};
   });
+  try { refreshFormsSafely_(); }
+  catch (error) { recordError_('importacao-csp-formularios', '', error); issues.push(safeError_(error)); }
+  if (source.schema === 'equipes') {
+    try {
+      withExternalFormOperation_(function() {
+        var state = readState_(), activity = state.activities[source.activityId];
+        setFormReceiving_(openFormWithDriveRetry_(source.formId),
+          state.accepting && activity.status === 'aberta' && SemDomain.occupancy(state, source.activityId) < activity.capacity);
+      });
+    } catch (error) { recordError_('importacao-csp-lotacao', '', error); issues.push(safeError_(error)); }
+  }
+  report.pendencias = issues;
   // A fila normal fará os envios; importação não chama MailApp diretamente.
   return report;
 }
@@ -358,7 +526,7 @@ function cancelarEquipeCsp(teamId, reason) {
   requireInstaller_();
   reason = String(reason || '').trim();
   if (reason.length < 5 || reason.length > 500) throw new Error('Justificativa deve ter entre 5 e 500 caracteres.');
-  return withLock_(function () {
+  var result = withLock_(function () {
     var journal = readJournal_(), team = journal.state.registrations[teamId];
     if (!team || team.entityType !== 'EQUIPE') throw new Error('Equipe não encontrada. Use o ID da aba Equipes.');
     if (team.status !== 'confirmada') return {resultado: 'ja_cancelada'};
@@ -370,15 +538,22 @@ function cancelarEquipeCsp(teamId, reason) {
         {type: 'CANCEL', registrationId: team.id, status: 'cancelada', reason: reason}
       ]}});
     journal = readJournal_(); rebuildViewsLocked_(journal);
-    var issues = [];
-    try { refreshFormsLocked_(journal.state); } catch (error) { issues.push(safeError_(error)); recordError_('cancelamento-equipe', '', error); }
-    var source = getCspImportSource_(), activity = journal.state.activities[team.activityId];
-    if (source.schema === 'equipes' && source.activityId === team.activityId) {
-      try { setFormReceiving_(FormApp.openById(source.formId), journal.state.accepting && activity.status === 'aberta' && SemDomain.occupancy(journal.state, team.activityId) < activity.capacity); }
-      catch (error) { issues.push(safeError_(error)); recordError_('cancelamento-equipe-formulario', '', error); }
-    }
-    return {resultado: 'canceled', ocupacao: SemDomain.occupancy(journal.state, team.activityId), unidadeCapacidade: 'equipes', pendencias: issues};
+    return {resultado: 'canceled', activityId: team.activityId};
   });
+  if (result.resultado !== 'canceled') return result;
+  var issues = [];
+  try { refreshFormsSafely_(); } catch (error) { issues.push(safeError_(error)); recordError_('cancelamento-equipe', '', error); }
+  try {
+    withExternalFormOperation_(function() {
+      var source = getCspImportSource_(), state = readState_(), activity = state.activities[result.activityId];
+      if (source.schema === 'equipes' && source.activityId === result.activityId) {
+        setFormReceiving_(openFormWithDriveRetry_(source.formId),
+          state.accepting && activity.status === 'aberta' && SemDomain.occupancy(state, result.activityId) < activity.capacity);
+      }
+    });
+  } catch (error) { issues.push(safeError_(error)); recordError_('cancelamento-equipe-formulario', '', error); }
+  var latest = readState_();
+  return {resultado: result.resultado, ocupacao: SemDomain.occupancy(latest, result.activityId), unidadeCapacidade: 'equipes', pendencias: issues};
 }
 
 function menuCancelarEquipe() {

@@ -106,7 +106,7 @@ function processFormResponse_(kind, form, response, deferViews) {
   var request;
   try {
     request = parseFormRequest_(kind, form, response); // Valida VERIFIED pela API antes de qualquer vínculo.
-    return withLock_(function() {
+    var outcome = withLock_(function() {
       var journal = readJournal_();
       var resetAt = props_().getProperty('SEMINFO_RESET_AT');
       if (resetAt && Date.parse(request.submittedAt) <= Date.parse(resetAt)) throw new Error('Resposta anterior à limpeza; envie novamente após a abertura.');
@@ -115,9 +115,11 @@ function processFormResponse_(kind, form, response, deferViews) {
         commitOperationLocked_(journal, {key: request.key, kind: 'REQUEST', at: new Date().toISOString(), request: request, outcome: outcome});
         journal = readJournal_();
       }
-      if (deferViews !== true) { rebuildViewsLocked_(journal); refreshFormsLocked_(journal.state); }
+      if (deferViews !== true) rebuildViewsLocked_(journal);
       return journal.byKey[request.key].outcome;
     });
+    if (deferViews !== true) refreshFormsSafely_();
+    return outcome;
   } catch (error) {
     var key = request ? request.key : (form && response ? form.getId() + ':' + response.getId() : '');
     recordError_('processamento', key, error);
@@ -151,7 +153,7 @@ function processarSolicitacoesPendentes(deadline) {
   for (var offset = 0; offset < sources.length && Date.now() < executionDeadline - 30000; offset++) {
     var index = (cursor + offset) % sources.length, source = sources[index];
     try {
-      var form = FormApp.openById(source.id);
+      var form = openFormWithDriveRetry_(source.id);
       assertVerifiedEmail_(form);
       var responses = form.getResponses();
       var responseCursorKey = 'SEMINFO_SCAN_RESPONSE_INDEX_' + form.getId();
@@ -177,8 +179,47 @@ function processarSolicitacoesPendentes(deadline) {
     try { processFormResponse_(pending[i].kind, pending[i].form, pending[i].response, true); done++; }
     catch (_) { failed++; }
   }
-  withLock_(function() { var journal = readJournal_(); rebuildViewsLocked_(journal); refreshFormsLocked_(journal.state); });
+  refreshFormsSafely_();
   return {processadas: done, falhas: failed, pendentesNoLote: pending.length - done, loteCheio: pending.length >= config.MAX_SOLICITACOES_POR_EXECUCAO, respostasEmQuarentena: quarantined, formulariosVarridos: scanned, errosDeVarredura: scanErrors, varreduraParcial: scanned < sources.length};
+}
+
+function refreshFormsSafely_() {
+  var refreshLock = LockService.getScriptLock();
+  refreshLock.waitLock(getConfig_().TEMPO_LOCK_MS);
+  var token = pendingOperationToken_();
+  var journal;
+  try {
+    assertNoReset_();
+    assertNoPendingOperation_();
+    journal = readJournal_();
+    rebuildViewsLocked_(journal);
+    props_().setProperty('SEMINFO_FORM_REFRESH_PENDING', token);
+  } finally { try { SpreadsheetApp.flush(); } finally { refreshLock.releaseLock(); } }
+
+  var refreshResult, refreshError;
+  try { refreshResult = refreshFormsLocked_(journal.state); }
+  catch (error) { refreshError = error; }
+  finally {
+    clearPendingOperation_('SEMINFO_FORM_REFRESH_PENDING', token);
+  }
+  if (refreshError) throw refreshError;
+  return refreshResult;
+}
+
+function withExternalFormOperation_(fn) {
+  var operationLock = LockService.getScriptLock();
+  operationLock.waitLock(getConfig_().TEMPO_LOCK_MS);
+  var token = pendingOperationToken_();
+  try {
+    assertNoReset_();
+    assertNoPendingOperation_();
+    props_().setProperty('SEMINFO_FORM_REFRESH_PENDING', token);
+  } finally { try { SpreadsheetApp.flush(); } finally { operationLock.releaseLock(); } }
+
+  try { return fn(); }
+  finally {
+    clearPendingOperation_('SEMINFO_FORM_REFRESH_PENDING', token);
+  }
 }
 
 function manutencaoPeriodica() {
@@ -192,5 +233,7 @@ function manutencaoPeriodica() {
 
 function reconstruirVisoes() {
   requireInstaller_();
-  return withLock_(function() { var journal = readJournal_(); rebuildViewsLocked_(journal); refreshFormsLocked_(journal.state); return journal.operations.length; });
+  var journal = withLock_(function() { var currentJournal = readJournal_(); rebuildViewsLocked_(currentJournal); return currentJournal; });
+  refreshFormsSafely_();
+  return journal.operations.length;
 }

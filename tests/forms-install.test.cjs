@@ -13,7 +13,7 @@ function environment(defaultMode = 'VERIFIED') {
   let sequence = 0;
   let sheetSequence = 0;
   const properties = new Map(), sheets = new Map(), forms = new Map(), triggers = [];
-  const stats = { formsCreated: 0, destinations: 0, triggersCreated: 0, responsesRead: 0, queueSyncs: 0, locks: 0 };
+  const stats = { formsCreated: 0, destinations: 0, triggersCreated: 0, responsesRead: 0, queueSyncs: 0, locks: 0, lockHeld: false, formUpdates: 0, formOpensWhileLocked: 0, tryLockSucceeds: true, installLockTimeout: 0 };
   const propertiesApi = {
     getProperties: () => Object.fromEntries(properties),
     getProperty: key => properties.has(key) ? properties.get(key) : null,
@@ -142,25 +142,49 @@ function environment(defaultMode = 'VERIFIED') {
   }
   const context = vm.createContext({
     console, PropertiesService: { getScriptProperties: () => propertiesApi },
-    SpreadsheetApp: { getActiveSpreadsheet: () => spreadsheet, openById: id => { assert.equal(id, 'SHEET'); return spreadsheet; },
+    SpreadsheetApp: { getActiveSpreadsheet: () => spreadsheet, openById: id => {
+      assert.ok(['SHEET', '1tFSDmBp9wsCskM0dIF_ax9-CM6upvodHAYL0xi2QhrA'].includes(id));
+      return spreadsheet;
+    },
       flush: () => {}, getUi: () => ({ alert: () => {} }), ProtectionType: { SHEET: 'SHEET' } },
     Session: { getEffectiveUser: () => ({ getEmail: () => 'ca@example.org' }), getScriptTimeZone: () => 'America/Sao_Paulo' },
-    LockService: { getScriptLock: () => ({ waitLock: () => { stats.locks++; }, releaseLock: () => {} }) },
+    LockService: { getScriptLock: () => ({
+      tryLock: timeout => { stats.installLockTimeout = timeout; if (!stats.tryLockSucceeds) return false; stats.locks++; stats.lockHeld = true; return true; },
+      waitLock: () => { stats.locks++; stats.lockHeld = true; },
+      releaseLock: () => { stats.lockHeld = false; }
+    }) },
     MailApp: { getRemainingDailyQuota: () => 100 },
     Utilities: { DigestAlgorithm: { SHA_256: 'SHA_256' }, Charset: { UTF_8: 'UTF_8' },
       computeDigest: (_, text) => [...crypto.createHash('sha256').update(text).digest()].map(value => value > 127 ? value - 256 : value),
-      getUuid: () => 'UUID-' + (++sequence), formatDate: value => value.toISOString() },
+      getUuid: () => 'UUID-' + (++sequence), formatDate: value => value.toISOString(), sleep: () => {} },
     FormApp: { create: (name, published) => { stats.formsCreated++; const form = new Form(name, published); forms.set(form.id, form); return form; },
       openByUrl: url => { const form = [...forms.values()].find(form => form.getPublishedUrl() === url); assert(form); return form; },
-      openById: id => { assert(forms.has(id), 'configured form must exist'); return forms.get(id); }, DestinationType: { SPREADSHEET: 'SPREADSHEET' } },
+      openById: id => { if (stats.lockHeld) stats.formOpensWhileLocked++; assert(forms.has(id), 'configured form must exist'); return forms.get(id); }, DestinationType: { SPREADSHEET: 'SPREADSHEET' } },
     DriveApp: { getFilesByName: name => {
       const matches = [...forms.values()].filter(form => form.documentTitle === name); let index = 0;
       return { hasNext: () => index < matches.length, next: () => { const form = matches[index++]; return {
         getId: () => form.id, isTrashed: () => false, getMimeType: () => 'application/vnd.google-apps.form'
       }; } };
     } },
-    UrlFetchApp: { fetch: url => {
-      const id = decodeURIComponent(url.split('/').pop().split('?')[0]), form = forms.get(id);
+    UrlFetchApp: { fetch: (url, options = {}) => {
+      const id = decodeURIComponent(url.split('/').pop().split('?')[0].replace(/:batchUpdate$/, '')), form = forms.get(id);
+      if (options.method === 'post') {
+        assert(url.endsWith(':batchUpdate'));
+        assert.equal(options.contentType, 'application/json');
+        assert.equal(options.headers.Authorization, 'Bearer MOCK_TOKEN');
+        const body = JSON.parse(options.payload);
+        const code = form.updateHttpCode || 200;
+        stats.formUpdates++;
+        for (const {updateSettings} of body.requests) {
+          assert.equal(updateSettings.updateMask, 'emailCollectionType');
+          assert.deepEqual(Object.keys(updateSettings.settings), ['emailCollectionType']);
+          if (code === 200 && !form.ignoreVerifiedUpdate) {
+            form.mode = updateSettings.settings.emailCollectionType;
+            form.collect = form.mode !== 'DO_NOT_COLLECT';
+          }
+        }
+        return {getResponseCode: () => code, getContentText: () => JSON.stringify({replies: [{}]})};
+      }
       return { getResponseCode: () => form.httpCode || 200,
         getContentText: () => JSON.stringify({ formId: id, settings: { emailCollectionType: form.mode } }) };
     } },
@@ -246,6 +270,8 @@ function environment(defaultMode = 'VERIFIED') {
 test('Instalação real com mocks cria Forms, abas e gatilhos uma vez e mantém ambos inicialmente fechados', () => {
   const e = environment(), first = e.installed(), counts = [e.sheets.size, e.stats.formsCreated, e.stats.destinations, e.stats.triggersCreated];
   assert.equal(e.context.readState_().accepting, false);
+  assert.equal(e.stats.formOpensWhileLocked, 0);
+  assert.equal(e.stats.installLockTimeout, 120000);
   assert.equal(e.forms.get(first.registrationId).accepting, false);
   assert.equal(e.forms.get(first.cancellationId).accepting, false);
   assert.equal(e.forms.get(first.registrationId).items.length, 4);
@@ -257,6 +283,30 @@ test('Instalação real com mocks cria Forms, abas e gatilhos uma vez e mantém 
   assert.equal(second.cancellationId, first.cancellationId);
   assert.equal(e.triggers.length, 3);
   for (const sheet of e.sheets.values()) assert.equal(sheet.protections.length, 1);
+});
+
+test('Falha ao adquirir o lock interrompe a instalação antes de alterar configurações ou Forms', () => {
+  const e = environment();
+  e.stats.tryLockSucceeds = false;
+  assert.throws(() => e.context.instalarSistema(), /Outra execução da SEMINFO mantém o bloqueio/);
+  assert.equal(e.stats.formsCreated, 0);
+  assert.equal(e.properties.has('SEMINFO_INSTALL_PENDING'), false);
+  assert.equal(e.properties.has('SEMINFO_INSTALLER'), false);
+});
+
+test('Operações comuns são bloqueadas durante uma atualização externa de Forms', () => {
+  const e = environment();
+  e.properties.set('SEMINFO_FORM_REFRESH_PENDING', Date.now() + '|refresh-test');
+  assert.throws(() => e.context.withLock_(() => true), /atualização dos Forms/);
+});
+
+test('Liberação do marcador só remove a operação que possui o mesmo token', () => {
+  const e = environment();
+  e.properties.set('SEMINFO_FORM_REFRESH_PENDING', 'token-atual');
+  e.context.clearPendingOperation_('SEMINFO_FORM_REFRESH_PENDING', 'token-antigo');
+  assert.equal(e.properties.get('SEMINFO_FORM_REFRESH_PENDING'), 'token-atual');
+  e.context.clearPendingOperation_('SEMINFO_FORM_REFRESH_PENDING', 'token-atual');
+  assert.equal(e.properties.has('SEMINFO_FORM_REFRESH_PENDING'), false);
 });
 
 test('Reinstalação preserva livro, configurações, inscrições confirmadas e estado de abertura', () => {
@@ -289,6 +339,31 @@ test('Nomeia a aba de respostas criada após a instalação quando a primeira in
   assert.equal(responseSheet.getName(), 'Respostas — Atividade A — Manhã');
 });
 
+test('Renomear abas repete falha transitória do serviço Forms sem manter bloqueio global', () => {
+  const e = environment(), entry = e.manualRegistration('A', {title: 'Atividade A'});
+  entry.definition.title = 'Atividade A';
+  e.configureExisting([entry], false);
+  e.installed();
+  const responseSheet = e.context.db_().insertSheet('Resposta ao formulário 8');
+  responseSheet.formUrl = entry.form.getPublishedUrl();
+  const openById = e.context.FormApp.openById;
+  let attempts = 0;
+  e.context.FormApp.openById = id => {
+    assert.equal(e.stats.lockHeld, false, 'naming response tabs must not hold the script lock');
+    attempts++;
+    if (id === entry.form.id && attempts === 1) {
+      throw new Error('Unexpected error while getting the method or property openById on object FormApp.');
+    }
+    return openById(id);
+  };
+
+  const result = e.context.sincronizarNomesAbasDeRespostas_();
+
+  assert.equal(attempts, 2);
+  assert.equal(result[0].aba, 'Respostas — Atividade A');
+  assert.equal(responseSheet.getName(), 'Respostas — Atividade A');
+});
+
 test('Entrada do participante falha fechada; primeira abertura VERIFIED define a janela confiável', () => {
   const e = environment('RESPONDER_INPUT'), report = e.installed();
   assert(report.issues.length > 0); e.context.salvarAtividade(e.activity());
@@ -300,6 +375,116 @@ test('Entrada do participante falha fechada; primeira abertura VERIFIED define a
     assert.equal(form.accepting, true); assert.equal(form.published, true);
     assert(e.properties.has('SEMINFO_VERIFIED_SINCE_' + form.id));
   }
+});
+
+test('onOpen cria o menu na planilha e oferece a configuração do e-mail verificado', () => {
+  const e = environment(), items = [];
+  let added = false;
+  const menu = {addItem: (label, handler) => { items.push({label, handler}); return menu; },
+    addSeparator: () => menu, addToUi: () => { added = true; }};
+  e.context.SpreadsheetApp.getUi = () => ({createMenu: title => { assert.equal(title, 'SEMINFO'); return menu; }});
+  e.context.onOpen();
+  assert.equal(added, true);
+  assert.ok(items.some(item => item.handler === 'configurarEmailVerificadoFormularios'));
+  assert.ok(items.every(item => typeof e.context[item.handler] === 'function'));
+  assert.equal(e.stats.formsCreated, 0);
+  assert.equal(e.sheets.size, 0);
+});
+
+test('onOpen orienta sem interface, mas propaga erros diferentes e falhas ao criar menu', () => {
+  const e = environment(), logs = [];
+  e.context.console = {log: message => logs.push(message)};
+  e.context.SpreadsheetApp.getUi = () => { throw new Error('Cannot call SpreadsheetApp.getUi() from this context.'); };
+  assert.doesNotThrow(() => e.context.onOpen());
+  assert.match(logs[0], /Abra ou recarregue a planilha/);
+  const failure = new Error('Acesso negado');
+  e.context.SpreadsheetApp.getUi = () => { throw failure; };
+  assert.throws(() => e.context.onOpen(), error => error === failure);
+  e.context.SpreadsheetApp.getUi = () => ({createMenu() { throw failure; }});
+  assert.throws(() => e.context.onOpen(), error => error === failure);
+});
+
+test('Configuração VERIFIED corrige vários Forms sem perder inscrições ou promover respostas históricas', () => {
+  const e = environment(), entries = Array.from({length: 5}, () => e.manualRegistration('A'));
+  e.configureExisting(entries, false); e.installed();
+  e.context.salvarAtividade(e.activity()); e.context.abrirInscricoes();
+  const confirmed = e.responseFrom(entries[0]);
+  e.context.processFormResponse_('INSCRICAO', confirmed.form, confirmed.response);
+  const historic = e.responseFrom(entries[1], {timestamp: new Date('2020-01-01T00:00:00Z')});
+  const cutoff = e.properties.get('SEMINFO_VERIFIED_SINCE_' + entries[0].form.id);
+  const operations = JSON.stringify(e.context.readJournal_().operations);
+  const snapshot = () => entries.map(({form}) => ({id: form.id, title: form.title, destination: form.destination,
+    items: form.items.map(item => item.id), responses: form.responses.map(response => response.getId())}));
+  const before = snapshot(), created = e.stats.formsCreated, destinations = e.stats.destinations;
+  for (const {form} of entries.slice(1)) form.mode = 'RESPONDER_INPUT';
+  const result = e.context.configurarEmailVerificadoFormularios();
+  assert.equal(result.total, 5); assert.equal(result.alterados, 4);
+  assert.equal(e.stats.formUpdates, 4);
+  assert.deepEqual(snapshot(), before);
+  assert.equal(JSON.stringify(e.context.readJournal_().operations), operations);
+  assert.equal(e.stats.formsCreated, created); assert.equal(e.stats.destinations, destinations);
+  assert.equal(e.properties.get('SEMINFO_VERIFIED_SINCE_' + entries[0].form.id), cutoff);
+  assert.equal(e.properties.has('SEMINFO_FORMS_ACTIVATED'), false);
+  for (const {form} of entries) { assert.equal(form.mode, 'VERIFIED'); assert.equal(form.accepting, false); }
+  for (const {form} of entries.slice(1)) assert.equal(e.properties.has('SEMINFO_VERIFIED_SINCE_' + form.id), false);
+  assert.equal(e.context.configurarEmailVerificadoFormularios().alterados, 0);
+  assert.equal(e.stats.formUpdates, 4, 'repetição não altera novamente a coleta');
+  assert.equal(e.context.conferirSistema().forms.length, 5);
+  e.context.abrirInscricoes();
+  assert.equal(e.properties.get('SEMINFO_VERIFIED_SINCE_' + entries[0].form.id), cutoff);
+  for (const {form} of entries.slice(1)) assert.ok(e.properties.has('SEMINFO_VERIFIED_SINCE_' + form.id));
+  assert.throws(() => e.context.processFormResponse_('INSCRICAO', historic.form, historic.response), /quarentena/);
+  assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'A'), 1);
+  const manifest = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'src', 'appsscript.json'), 'utf8'));
+  assert.ok(manifest.oauthScopes.includes('https://www.googleapis.com/auth/forms.body'));
+});
+
+test('Configuração VERIFIED trata coleta desativada e inclui o Form de cancelamento', () => {
+  const e = environment('DO_NOT_COLLECT'); e.installed();
+  const result = e.context.configurarEmailVerificadoFormularios();
+  assert.equal(result.total, 2); assert.equal(result.alterados, 2);
+  for (const form of e.forms.values()) {
+    assert.equal(form.collect, true); assert.equal(form.mode, 'VERIFIED'); assert.equal(form.accepting, false);
+    assert.equal(e.properties.has('SEMINFO_VERIFIED_SINCE_' + form.id), false);
+  }
+});
+
+test('Falha na leitura ou atualização VERIFIED mantém Forms fechados e permite retomar sem duplicar recursos', () => {
+  for (const stage of ['get', 'post']) {
+    const e = environment(); e.begin();
+    const form = e.forms.values().next().value;
+    form.mode = 'RESPONDER_INPUT';
+    if (stage === 'get') form.httpCode = 403;
+    else form.updateHttpCode = 403;
+    assert.throws(() => e.context.configurarEmailVerificadoFormularios(), error => /HTTP 403/.test(error.message) && !/MOCK_TOKEN/.test(error.message));
+    assert.equal(e.properties.has('SEMINFO_FORMS_ACTIVATED'), false);
+    for (const entry of e.forms.values()) assert.equal(entry.accepting, false);
+    if (stage === 'post') assert.equal(e.properties.has('SEMINFO_VERIFIED_SINCE_' + form.id), false);
+    delete form.httpCode; delete form.updateHttpCode;
+    assert.equal(e.context.configurarEmailVerificadoFormularios().alterados, 1);
+    assert.equal(e.forms.size, 2);
+    assert.equal(e.properties.has('SEMINFO_VERIFIED_SINCE_' + form.id), false);
+  }
+});
+
+test('Resposta HTTP 200 sem coleta VERIFIED não é tratada como configuração confirmada', () => {
+  const e = environment(); e.begin();
+  const form = e.forms.values().next().value;
+  form.mode = 'RESPONDER_INPUT'; form.ignoreVerifiedUpdate = true;
+  assert.throws(() => e.context.configurarEmailVerificadoFormularios(), /Configure o e-mail verificado/);
+  assert.equal(e.properties.has('SEMINFO_FORMS_ACTIVATED'), false);
+  assert.equal(e.properties.has('SEMINFO_VERIFIED_SINCE_' + form.id), false);
+  for (const entry of e.forms.values()) assert.equal(entry.accepting, false);
+});
+
+test('Outra conta não pode configurar VERIFIED nem fechar Forms em produção', () => {
+  const e = environment(); e.begin();
+  const locks = e.stats.locks;
+  e.context.Session.getEffectiveUser = () => ({getEmail: () => 'outra@example.org'});
+  assert.throws(() => e.context.configurarEmailVerificadoFormularios(), /conta que instalou/);
+  assert.equal(e.stats.locks, locks); assert.equal(e.stats.formUpdates, 0);
+  assert.equal(e.properties.get('SEMINFO_FORMS_ACTIVATED'), 'true');
+  for (const form of e.forms.values()) assert.equal(form.accepting, true);
 });
 
 test('Atividade lotada sai da inscrição, permanece no cancelamento e retorna após liberação da vaga', () => {
@@ -1066,6 +1251,128 @@ test('Importação da CSP pode recuperar respostas de uma aba de backup após a 
   assert.equal(e.context.readState_().registrations[e.form.id + ':' + response.getId() + ':equipe'].members.length, 2);
 });
 
+function savedCspMemberRows(e, responseId = 'SAVED_R1') {
+  const id = e.form.id + ':' + responseId + ':equipe';
+  return [Array.from(e.context.SEMINFO_TABLES.IntegrantesEquipes),
+    [id, 'Equipe salva', '52998224725', 'Coach Exemplo', 'coach', '', '', 'Coach Exemplo - 52998224725'],
+    [id, 'Equipe salva', '01234567890', 'Pessoa Exemplo', 'integrante', 'Turma A', '35999999999', 'Pessoa Exemplo\n01234567890']];
+}
+
+test('Recupera IntegrantesEquipes sem respostas nem perguntas originais, preservando IDs, CPF e origem', () => {
+  const e = teamCspEnvironment(5), rows = savedCspMemberRows(e), name = 'Backup_Integrantes_CSP';
+  e.context.writeTable_(name, rows[0], [rows[2], rows[1]]);
+  e.form.items = []; e.form.responses = [];
+  e.source.backupSheetName = name;
+  e.context.setConfig_('IMPORTACAO_CSP_JSON', JSON.stringify(e.source));
+  const preview = e.context.prepararImportacaoCsp();
+  assert.equal(preview.total, 1); assert.equal(preview.resultadosPrevistos.confirmed, 1);
+  assert.match(preview.avisoRecuperacao, /não contém data original/);
+  assert.equal(e.context.tableRows_('Equipes').length, 0, 'prévia não restaura antes da conferência');
+  const previewSheet = [...e.sheets.values()].find(sheet => sheet.name.startsWith('Previa_CSP_'));
+  assert.equal(previewSheet.cells[1][2], '', 'não inventa a data original');
+  assert.ok(previewSheet.cells[1][10], 'registra a data da recuperação separadamente');
+  assert.equal(e.context.importarInscricoesAnterioresCsp().ocupacao, 1);
+  const team = e.context.readState_().registrations[rows[1][0]];
+  assert.equal(team.members[0].role, 'coach'); assert.equal(team.members[1].cpf, '01234567890');
+  assert.equal(team.members[1].raw, rows[2][7]); assert.equal(team.members[1].turma, 'Turma A');
+  const op = e.context.readJournal_().byKey[e.form.id + ':SAVED_R1'];
+  assert.equal(op.request.originalSubmittedAt, null); assert.equal(op.request.originalStatus, null);
+  assert.equal(op.request.identitySource, 'RECUPERACAO_ADMINISTRATIVA_BACKUP_INTEGRANTES');
+  assert.equal(e.context.importarInscricoesAnterioresCsp().processadasNesteLote, 0);
+});
+
+test('Recupera CSP das duas abas históricas e preserva tipo e data original da equipe', () => {
+  const e = teamCspEnvironment(5), members = savedCspMemberRows(e), createdAt = '2026-10-05T17:32:52.510Z';
+  const teams = [Array.from(e.context.SEMINFO_TABLES.Equipes),
+    [members[1][0], 'CSP_2026', 'Equipe salva', 'Técnico em informática', '52998224725', '2', 'confirmada', createdAt, '']];
+  const preview = e.context.prepararRecuperacaoEquipesCsp(members, teams);
+  assert.equal(preview.total, 1);
+  assert.equal(preview.avisoRecuperacao, '');
+  const savedSource = JSON.parse(e.context.getConfig_().IMPORTACAO_CSP_JSON);
+  assert.ok(savedSource.backupSheetName);
+  assert.ok(savedSource.backupTeamSheetName);
+  const previewSheet = [...e.sheets.values()].find(sheet => sheet.name.startsWith('Previa_CSP_'));
+  assert.equal(previewSheet.cells[1][2], createdAt);
+  assert.equal(previewSheet.cells[1][4], 'Técnico em informática');
+  assert.ok(previewSheet.cells[1][10], 'registra quando os dados foram recuperados');
+
+  e.context.importarInscricoesAnterioresCsp();
+  const team = e.context.readState_().registrations[members[1][0]];
+  assert.equal(team.createdAt, createdAt);
+  assert.equal(team.teamType, 'Técnico em informática');
+  const operation = e.context.readJournal_().byKey[e.form.id + ':SAVED_R1'];
+  assert.equal(operation.request.originalSubmittedAt, createdAt);
+  assert.equal(operation.request.originalStatus, 'confirmada');
+  assert.equal(operation.request.identitySource, 'RECUPERACAO_ADMINISTRATIVA_BACKUP_COMPLETO');
+});
+
+test('Backup salvo é protegido e novas respostas acrescentam equipes sem sobrescrever recuperadas', () => {
+  const e = teamCspEnvironment(5), rows = savedCspMemberRows(e);
+  const preview = e.context.prepararRecuperacaoEquipesCsp(rows);
+  assert.equal(preview.total, 1);
+  const sheet = e.sheets.get(preview.backupSheetName), original = JSON.stringify(sheet.cells);
+  assert.ok(sheet.hidden && sheet.protections.length);
+  e.context.importarInscricoesAnterioresCsp();
+  e.teamResponse('Equipe nova', ['Nova Pessoa - 11144477735']);
+  const next = e.context.prepararImportacaoCsp();
+  assert.equal(next.total, 2); assert.equal(next.jaProcessadas, 1);
+  const result = e.context.importarInscricoesAnterioresCsp();
+  assert.equal(result.processadasNesteLote, 1); assert.equal(result.ocupacao, 2);
+  e.context.reconstruirVisoes();
+  assert.equal(e.context.tableRows_('Equipes').length, 2);
+  assert.equal(e.context.tableRows_('IntegrantesEquipes').length, 3);
+  assert.ok(e.context.readState_().registrations[rows[1][0]]);
+  assert.equal(JSON.stringify(sheet.cells), original);
+  e.context.prepararRecuperacaoEquipesCsp(rows);
+  assert.equal(e.context.importarInscricoesAnterioresCsp().processadasNesteLote, 0);
+  assert.equal([...e.sheets.keys()].filter(name => name.startsWith('Backup_CSP_Salvo_')).length, 1);
+});
+
+test('ID que voltou a existir no Form não duplica nem substitui os dados da equipe recuperada', () => {
+  const e = teamCspEnvironment(5), live = e.teamResponse('Nome novo no Form', ['Coach Exemplo - 52998224725']);
+  const rows = savedCspMemberRows(e, live.getId());
+  assert.equal(e.context.prepararRecuperacaoEquipesCsp(rows).total, 1);
+  assert.equal(e.context.importarInscricoesAnterioresCsp().ocupacao, 1);
+  assert.equal(e.context.tableRows_('Equipes')[0].EQUIPE, 'Equipe salva');
+  assert.equal(e.context.tableRows_('IntegrantesEquipes').length, 2);
+});
+
+test('Reimportar backup após cancelamento não ressuscita a equipe nem ocupa outra vaga', () => {
+  const e = teamCspEnvironment(5), rows = savedCspMemberRows(e);
+  e.context.prepararRecuperacaoEquipesCsp(rows); e.context.importarInscricoesAnterioresCsp();
+  e.context.cancelarEquipeCsp(rows[1][0], 'Cancelamento solicitado pela equipe.');
+  e.context.prepararImportacaoCsp();
+  assert.equal(e.context.importarInscricoesAnterioresCsp().ocupacao, 0);
+  assert.equal(e.context.readState_().registrations[rows[1][0]].status, 'cancelada');
+});
+
+test('Backup de integrantes exige IDs da origem, nome consistente, coach único e CPFs válidos', () => {
+  const e = teamCspEnvironment(5), rows = savedCspMemberRows(e), until = new Date().toISOString();
+  const malformed = structuredClone(rows); malformed[1][0] = 'OUTRO_FORM:R1:equipe';
+  assert.throws(() => e.context.cspRequestsFromMemberBackup_(e.source, malformed, until), /EQUIPE_ID incompatível/);
+  const divergent = structuredClone(rows); divergent[2][1] = 'Outra equipe';
+  assert.throws(() => e.context.cspRequestsFromMemberBackup_(e.source, divergent, until), /Nomes de equipe divergentes/);
+  const invalid = structuredClone(rows); invalid[1][4] = 'integrante'; invalid[2][2] = '1234567890';
+  const data = e.context.cspRequestsFromMemberBackup_(e.source, invalid, until);
+  assert.equal(data.requests[0].invalidAnswer, true);
+  assert.match(data.requests[0].importErrors.join(' '), /coach/);
+  assert.match(data.requests[0].importErrors.join(' '), /CPF inválido/);
+  e.context.prepararRecuperacaoEquipesCsp(invalid);
+  const result = e.context.importarInscricoesAnterioresCsp();
+  assert.equal(result.ocupacao, 0); assert.equal(result.pendentesConferencia, 1);
+  assert.equal(e.context.readJournal_().byKey[e.form.id + ':SAVED_R1'], undefined);
+});
+
+test('Conteúdo alterado em backup existente não é sobrescrito e mudança após prévia bloqueia importação', () => {
+  const e = teamCspEnvironment(5), rows = savedCspMemberRows(e);
+  const report = e.context.prepararRecuperacaoEquipesCsp(rows), sheet = e.sheets.get(report.backupSheetName);
+  sheet.getRange(2, 4).setValue('Nome modificado');
+  assert.throws(() => e.context.prepararRecuperacaoEquipesCsp(rows), /nenhuma linha foi sobrescrita/);
+  assert.throws(() => e.context.importarInscricoesAnterioresCsp(), /alteradas ou excluídas/);
+  assert.equal(e.context.tableRows_('Equipes').length, 0);
+  assert.equal(sheet.cells[1][3], 'Nome modificado');
+});
+
 test('CPF de 12 dígitos fica pendente para conferência e pode ser corrigido sem perder a resposta original', () => {
   const e = teamCspEnvironment(2);
   const invalid = e.teamResponse('Equipe com pendência', ['Pessoa Fictícia - 134756596699']);
@@ -1192,6 +1499,8 @@ test('Programação carrega horários/capacidades conhecidos, separa turnos e ma
   assert.equal(state.activities.PALESTRA_BIO.start, '');
   assert.match(state.activities.PALESTRA_BIO.description, /2026-10-27/);
   assert.equal(state.activities.CSP_2026.capacityUnit, 'equipes');
+  assert.equal(state.activities.CSP_2026.capacity, 60);
+  assert.equal(state.activities.CSP_2026.status, 'aberta');
   assert.equal(state.activities.CSP_2026.type, 'competicao');
   assert.equal(state.activities.ENCERRAMENTO_2026.type, 'programacao');
   assert.equal(state.activities.OFICINA_YASMIN_GABRIEL.status, 'pendente');
@@ -1347,6 +1656,58 @@ test('Migração da lista nomeia Forms e adiciona novos preservando perguntas e 
   assert.equal(second.form.accepting, false);
 });
 
+test('Preparação dos Forms repete falha temporária de timeout do Drive', () => {
+  const e = environment(), first = e.manualRegistration('A'), second = e.manualRegistration('B');
+  e.configureExisting([first]); e.installed();
+  e.context.SEMINFO_CONFIG = Object.freeze({...e.context.SEMINFO_CONFIG, FORMULARIOS_INSCRICAO_JSON: JSON.stringify([
+    first.definition, second.definition
+  ])});
+  const openById = e.context.FormApp.openById, attempts = new Map();
+  e.context.FormApp.openById = id => {
+    const count = attempts.get(id) || 0;
+    attempts.set(id, count + 1);
+    if (id === second.form.id && count === 0) throw new Error('O tempo limite do serviço Drive foi atingido ao acessar o documento.');
+    return openById(id);
+  };
+
+  const result = e.context.prepararFormulariosSeminfo2026();
+
+  assert.equal(result.length, 2);
+  assert.equal(attempts.get(second.form.id), 2);
+});
+
+test('Validação lenta dos Forms ocorre fora do bloqueio global', () => {
+  const e = environment(), first = e.manualRegistration('A'), second = e.manualRegistration('B');
+  e.configureExisting([first]); e.installed();
+  e.context.SEMINFO_CONFIG = Object.freeze({...e.context.SEMINFO_CONFIG, FORMULARIOS_INSCRICAO_JSON: JSON.stringify([
+    first.definition, second.definition
+  ])});
+  const openById = e.context.FormApp.openById;
+  e.context.FormApp.openById = id => {
+    assert.equal(e.stats.lockHeld, false, 'Drive validation must not hold the script lock');
+    return openById(id);
+  };
+
+  assert.equal(e.context.prepararFormulariosSeminfo2026().length, 2);
+});
+
+test('Timeout persistente do Drive não grava configuração parcial da lista de Forms', () => {
+  const e = environment(), first = e.manualRegistration('A'), second = e.manualRegistration('B');
+  e.configureExisting([first]); e.installed();
+  e.context.SEMINFO_CONFIG = Object.freeze({...e.context.SEMINFO_CONFIG, FORMULARIOS_INSCRICAO_JSON: JSON.stringify([
+    first.definition, second.definition
+  ])});
+  const before = e.context.getRegistrationFormDefinitions_().map(entry => entry.id);
+  const openById = e.context.FormApp.openById;
+  e.context.FormApp.openById = id => {
+    if (id === second.form.id) throw new Error('O tempo limite do serviço Drive foi atingido ao acessar o documento.');
+    return openById(id);
+  };
+
+  assert.throws(() => e.context.prepararFormulariosSeminfo2026(), /tempo limite do serviço Drive/);
+  assert.deepEqual(e.context.getRegistrationFormDefinitions_().map(entry => entry.id), before);
+});
+
 test('Importação já iniciada é invalidada quando muda a geração após reinício', () => {
   const e = historicalCspEnvironment(3);
   e.oldResponse('52998224725', 'primeiro@example.org');
@@ -1372,6 +1733,32 @@ test('Instalação nomeia abas nativas por atividade, preserva dados e não reno
   assert.equal(install.abasDeRespostas.length, 1);
   e.context.instalarSistema();
   assert.equal(raw.name, 'Respostas — Oficina de Jogos — Tarde');
+});
+
+test('Nomeia a aba nativa do Form histórico da CSP pelo título da atividade e preserva respostas', () => {
+  const e = historicalCspEnvironment();
+  e.context.salvarAtividade(e.activity('CSP_2026', {title: 'Competição Seminfo de Programação — CSP', capacityUnit: 'equipes'}));
+  e.legacy.form.destination = 'SHEET';
+  const raw = e.context.db_().insertSheet('Respostas ao formulário 8');
+  raw.sheetId = 858916137;
+  raw.formUrl = e.legacy.form.getPublishedUrl();
+  raw.appendRow(['Equipe']).appendRow(['Equipe Exemplo']);
+
+  const result = e.context.nomearAbasDeRespostas_();
+
+  assert.equal(raw.name, 'Respostas — Competição Seminfo de Programação — CSP');
+  assert.equal(raw.cells[1][0], 'Equipe Exemplo');
+  assert.ok(result.some(entry => entry.formId === e.legacy.form.id && entry.aba === raw.name));
+});
+
+test('Não renomeia a guia CSP configurada quando ela não está vinculada ao Form esperado', () => {
+  const e = historicalCspEnvironment();
+  const raw = e.context.db_().insertSheet('Respostas ao formulário 8');
+  raw.sheetId = 858916137;
+  raw.formUrl = 'https://docs.google.com/forms/d/outro-form/edit';
+
+  assert.throws(() => e.context.nomearAbasDeRespostas_(), /não está vinculada ao Form/);
+  assert.equal(raw.name, 'Respostas ao formulário 8');
 });
 
 test('Form sem destino é reconhecido em português e inglês; erros diferentes continuam sendo propagados', () => {

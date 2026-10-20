@@ -59,7 +59,7 @@ flowchart LR
 3. Habilite a exibição do manifesto nas configurações do projeto e use [`src/appsscript.json`](src/appsscript.json). O fuso é `America/Sao_Paulo`.
 4. Confira os IDs e o e-mail da organização em [`src/Config.gs`](src/Config.gs). Habilite a **Google Forms API** no projeto Cloud associado.
 5. Execute `instalarSistema` com a conta que ficará responsável pelo sistema e autorize as permissões.
-6. Em cada Form, configure **Coletar endereços de e-mail → Verificado** e confira o acesso dos participantes.
+6. Execute `configurarEmailVerificadoFormularios` para definir **Coletar endereços de e-mail → Verificado** em todos os Forms configurados, ou escolha essa opção manualmente em cada Form. Confira o acesso dos participantes.
 7. Execute `atualizarProgramacaoSeminfo2026` para integrar os Forms e cadastrar a programação. Complete as pendências, confira o sistema e use **Abrir inscrições** quando estiver pronto.
 
 > Os arquivos mantêm a configuração do evento. Depois da instalação, os valores persistidos são lidos da aba `Configuracoes`; mudar os padrões do código não substitui automaticamente essa configuração.

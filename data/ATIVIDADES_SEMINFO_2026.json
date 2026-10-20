@@ -183,13 +183,13 @@
     "id": "CSP_2026",
     "title": "Competição Seminfo de Programação — CSP",
     "type": "competicao",
-    "description": "Programação de 2026-10-29. Pendências: Local e capacidade em equipes; manter importação de equipes separada.",
+    "description": "Programação de 2026-10-29.",
     "instructor": "",
-    "location": "",
+    "location": "Prédio da Informática",
     "start": "2026-10-29T16:00:00.000Z",
     "end": "2026-10-29T19:00:00.000Z",
-    "capacity": null,
-    "status": "pendente",
+    "capacity": 60,
+    "status": "aberta",
     "capacityUnit": "equipes"
   },
   {
