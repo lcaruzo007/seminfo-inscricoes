@@ -73,7 +73,7 @@
   },
   {
     "id": "OFICINA_GAMEMAKER",
-    "title": "Oficina de Jogos — Tarde",
+    "title": "Desenvolvimento de Jogos 2D com GameMaker — Tarde",
     "type": "oficina",
     "description": "Programação de 2026-10-27.",
     "instructor": "Ricardo Martins",
@@ -97,7 +97,7 @@
   },
   {
     "id": "OFICINA_BLENDER",
-    "title": "Oficina de 3D",
+    "title": "Introdução ao 3D com Blender",
     "type": "oficina",
     "description": "Programação de 2026-10-27.",
     "instructor": "Caio H.",
@@ -109,7 +109,7 @@
   },
   {
     "id": "OFICINA_OLLAMA",
-    "title": "Oficina Ollama",
+    "title": "Rodando Inteligência Artificial no seu PC com Ollama",
     "type": "oficina",
     "description": "Programação de 2026-10-27.",
     "instructor": "Darosa",
@@ -133,7 +133,7 @@
   },
   {
     "id": "OFICINA_JOGOS_NOITE",
-    "title": "Oficina de Jogos — Noite",
+    "title": "Desenvolvimento de Jogos 2D com GameMaker — Noite",
     "type": "oficina",
     "description": "Programação de 2026-10-27.",
     "instructor": "Ricardo Martins",
@@ -145,7 +145,7 @@
   },
   {
     "id": "PALESTRA_BIO",
-    "title": "Palestra Bio",
+    "title": "Acervo Brasileiro de Referências sobre Eugenia (ABREU): o uso de ferramentas Google na construção de uma plataforma de divulgação científica",
     "type": "palestra",
     "description": "Programação de 2026-10-27. Pendências: Início, término, capacidade e ministrante.",
     "instructor": "",
@@ -157,7 +157,7 @@
   },
   {
     "id": "OFICINA_SEGURANCA",
-    "title": "Oficina Segurança da Informação",
+    "title": "Segurança da Informação na Prática: Aprenda, Identifique e Proteja-se",
     "type": "oficina",
     "description": "Programação de 2026-10-28. Pendências: Confirmar sala 15.",
     "instructor": "Rafaela",
@@ -169,7 +169,7 @@
   },
   {
     "id": "PALESTRA_DANIELE",
-    "title": "Palestra Online — Daniele Tavares",
+    "title": "Computação Quântica: Entendendo o contexto para inovar no futuro",
     "type": "palestra",
     "description": "Programação de 2026-10-28. Pendências: Término e capacidade.",
     "instructor": "Daniele Tavares",
@@ -206,7 +206,7 @@
   },
   {
     "id": "PALESTRA_JOHNATAN",
-    "title": "Palestra Online — Johnatan UFLA",
+    "title": "Ainda precisamos aprender a programar? O futuro da Engenharia de Software na era da Inteligência Artificial",
     "type": "palestra",
     "description": "Programação de 2026-10-29. Pendências: Término e capacidade.",
     "instructor": "Johnatan UFLA",

@@ -2,13 +2,13 @@
 
 ## Executados localmente
 
-Em 20/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **165 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
+Em 20/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **168 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
 
 | Suíte | Testes | Evidência |
 |---|---:|---|
 | `tests/domain.test.cjs` | 30 | Regras puras de CPF, identidade, vagas, intervalos, trocas, replay e administração |
 | `tests/notifications.test.cjs` | 19 | Cota incluindo CC, deduplicação, leases, falhas, modelos, prazo e duplicação após envio interrompido |
-| `tests/forms-install.test.cjs` | 101 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
+| `tests/forms-install.test.cjs` | 104 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
 | `tests/persistence.test.cjs` | 15 | Injeção de falhas antes/depois do append, recuperação, corrupção e releitura sob lock simulado |
 
 As suítes usam `node:test`/`assert`, `vm` e `crypto`, todos nativos do Node, e carregam os módulos de `src/`. Execute cada arquivo na raiz do projeto conforme o [README](../README.md). São apropriados também para ambientes que não permitem subprocessos do executor `node --test`. O empacotamento gera `dist/test-results.txt` com a saída da execução final; os relatórios e pacotes de `dist/` ficam fora do Git.

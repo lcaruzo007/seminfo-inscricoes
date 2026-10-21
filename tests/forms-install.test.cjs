@@ -1912,3 +1912,29 @@ test('Atualização da programação inclui Form da abertura e conserva inscriç
   assert.equal(input.form.responses.length, 1);
   assert.equal(e.properties.has('SEMINFO_RESET_AT'), false);
 });
+
+test('Atualiza títulos dos Forms e atividades preservando respostas, inscrições e configuração operacional', () => {
+  const e = environment(); e.begin();
+  const input = e.response('INSCRICAO'); e.context.processFormResponse_('INSCRICAO', input.form, input.response);
+  const game = e.manualRegistration('OFICINA_GAMEMAKER');
+  e.context.setConfig_('FORMULARIOS_INSCRICAO_JSON', JSON.stringify([
+    ...e.context.getRegistrationFormDefinitions_(), game.definition]));
+  e.context.instalarSistema();
+  e.context.salvarAtividade(e.activity('OFICINA_GAMEMAKER', {title: 'Nome antigo', capacity: 45}));
+  const before = e.context.readState_().activities.OFICINA_GAMEMAKER;
+  const created = e.stats.formsCreated;
+  const questionIds = game.form.items.map(item => item.id);
+  const result = e.context.atualizarFormularios();
+  const expected = 'Desenvolvimento de Jogos 2D com GameMaker — Tarde';
+  assert.equal(game.form.title, expected);
+  assert.equal(e.context.getRegistrationFormDefinitions_().find(entry => entry.id === game.form.id).title, expected);
+  assert.deepEqual({...e.context.readState_().activities.OFICINA_GAMEMAKER}, {...before, title: expected});
+  assert.deepEqual(game.form.items.map(item => item.id), questionIds);
+  assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'A'), 1);
+  assert.equal(input.form.responses.length, 1);
+  assert.equal(e.stats.formsCreated, created);
+  assert.equal(result.formularios.length, 1);
+  const operations = e.context.readJournal_().operations.length;
+  e.context.atualizarFormularios();
+  assert.equal(e.context.readJournal_().operations.length, operations);
+});

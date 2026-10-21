@@ -407,18 +407,18 @@ function programacaoSeminfo2026_() {
     item('PALESTRA_RENATO', '2026-10-26', '13:50', '', 'Palestra — Renato', 'palestra', 'Renato', 'Auditório Novo', null, 'Término, capacidade e Form.'),
     item('COFFEE_BREAK', '2026-10-26', '15:00', '', 'Coffee break', '', '', 'Auditório Novo', null, 'Término; sem Form informado.'),
     item('NOITE_26', '2026-10-26', '19:00', '23:00', 'Palestra / Oficina online — a confirmar', '', '', '', null, 'Atividade, ministrante, local, capacidade e Form.'),
-    item('OFICINA_GAMEMAKER', '2026-10-27', '13:00', '17:00', 'Oficina de Jogos — Tarde', 'oficina', 'Ricardo Martins', 'Sala 14', 30),
+    item('OFICINA_GAMEMAKER', '2026-10-27', '13:00', '17:00', 'Desenvolvimento de Jogos 2D com GameMaker — Tarde', 'oficina', 'Ricardo Martins', 'Sala 14', 30),
     item('OFICINA_YASMIN_GABRIEL', '2026-10-27', '13:00', '17:00', 'Oficina — Yasmin e Gabriel', 'oficina', 'Yasmin e Gabriel', 'Sala 16', 30, 'Tema e Form.'),
-    item('OFICINA_BLENDER', '2026-10-27', '13:00', '17:00', 'Oficina de 3D', 'oficina', 'Caio H.', 'Sala 15', 30),
-    item('OFICINA_OLLAMA', '2026-10-27', '13:00', '17:00', 'Oficina Ollama', 'oficina', 'Darosa', 'Sala 5 (redes)', 15),
+    item('OFICINA_BLENDER', '2026-10-27', '13:00', '17:00', 'Introdução ao 3D com Blender', 'oficina', 'Caio H.', 'Sala 15', 30),
+    item('OFICINA_OLLAMA', '2026-10-27', '13:00', '17:00', 'Rodando Inteligência Artificial no seu PC com Ollama', 'oficina', 'Darosa', 'Sala 5 (redes)', 15),
     item('OFICINA_IA_ALEM_CHAT', '2026-10-27', '13:00', '17:00', 'Oficina IA Além do Chat', 'oficina', 'Rafaela', 'Sala 13', 30),
-    item('OFICINA_JOGOS_NOITE', '2026-10-27', '19:00', '23:00', 'Oficina de Jogos — Noite', 'oficina', 'Ricardo Martins', 'Sala 14', 30),
-    item('PALESTRA_BIO', '2026-10-27', '', '', 'Palestra Bio', 'palestra', '', 'Auditório H', null, 'Início, término, capacidade e ministrante.'),
-    item('OFICINA_SEGURANCA', '2026-10-28', '13:00', '17:00', 'Oficina Segurança da Informação', 'oficina', 'Rafaela', 'Sala 15 — a confirmar', 30, 'Confirmar sala 15.'),
-    item('PALESTRA_DANIELE', '2026-10-28', '19:30', '', 'Palestra Online — Daniele Tavares', 'palestra', 'Daniele Tavares', 'Online', null, 'Término e capacidade.'),
+    item('OFICINA_JOGOS_NOITE', '2026-10-27', '19:00', '23:00', 'Desenvolvimento de Jogos 2D com GameMaker — Noite', 'oficina', 'Ricardo Martins', 'Sala 14', 30),
+    item('PALESTRA_BIO', '2026-10-27', '', '', 'Acervo Brasileiro de Referências sobre Eugenia (ABREU): o uso de ferramentas Google na construção de uma plataforma de divulgação científica', 'palestra', '', 'Auditório H', null, 'Início, término, capacidade e ministrante.'),
+    item('OFICINA_SEGURANCA', '2026-10-28', '13:00', '17:00', 'Segurança da Informação na Prática: Aprenda, Identifique e Proteja-se', 'oficina', 'Rafaela', 'Sala 15 — a confirmar', 30, 'Confirmar sala 15.'),
+    item('PALESTRA_DANIELE', '2026-10-28', '19:30', '', 'Computação Quântica: Entendendo o contexto para inovar no futuro', 'palestra', 'Daniele Tavares', 'Online', null, 'Término e capacidade.'),
     item('CSP_2026', '2026-10-29', '13:00', '16:00', 'Competição Seminfo de Programação — CSP', 'competicao', '', 'Prédio da Informática', 60),
     item('ENCERRAMENTO_2026', '2026-10-29', '16:00', '17:00', 'Encerramento', '', '', 'Auditório H', null, 'Sem Form de inscrição informado.'),
-    item('PALESTRA_JOHNATAN', '2026-10-29', '19:30', '', 'Palestra Online — Johnatan UFLA', 'palestra', 'Johnatan UFLA', 'Online', null, 'Término e capacidade.')
+    item('PALESTRA_JOHNATAN', '2026-10-29', '19:30', '', 'Ainda precisamos aprender a programar? O futuro da Engenharia de Software na era da Inteligência Artificial', 'palestra', 'Johnatan UFLA', 'Online', null, 'Término e capacidade.')
   ];
 }
 
@@ -472,6 +472,54 @@ function atualizarProgramacaoSeminfo2026() {
   var program = carregarProgramacaoSeminfo2026();
   var installation = instalarSistema();
   return {programacao: program, instalacao: installation};
+}
+
+/** Atualiza somente títulos; conserva perguntas, respostas e dados operacionais. */
+function atualizarFormularios() {
+  requireInstaller_();
+  return withLock_(function () {
+    var definitions = getRegistrationFormDefinitions_();
+    var program = programacaoSeminfo2026_();
+    var renamedIds = ['OFICINA_GAMEMAKER', 'OFICINA_JOGOS_NOITE', 'OFICINA_BLENDER',
+      'OFICINA_OLLAMA', 'OFICINA_SEGURANCA', 'PALESTRA_DANIELE', 'PALESTRA_BIO', 'PALESTRA_JOHNATAN'];
+    var titles = {};
+    program.forEach(function (entry) {
+      if (renamedIds.indexOf(entry.id) >= 0) titles[entry.id] = entry.title;
+    });
+    var entries = definitions.filter(function (entry) { return entry.id && titles[entry.activityId]; })
+      .map(function (entry) { return {source: entry, form: openFormWithDriveRetry_(entry.id)}; });
+    var journal = readJournal_();
+    Object.keys(titles).forEach(function (id) {
+      var existing = journal.state.activities[id];
+      if (!existing || existing.title === titles[id]) return;
+      var activity = Object.assign({}, existing, {title: titles[id]});
+      commitOperationLocked_(journal, {key: 'ADMIN:CATALOG:' + Utilities.getUuid(), kind: 'CATALOG',
+        at: new Date().toISOString(), activity: activity});
+      journal = readJournal_();
+    });
+    definitions.forEach(function (entry) {
+      if (titles[entry.activityId]) entry.title = titles[entry.activityId];
+    });
+    setConfig_('FORMULARIOS_INSCRICAO_JSON', JSON.stringify(definitions));
+    entries.forEach(function (entry) { entry.form.setTitle(titles[entry.source.activityId]); });
+    rebuildViewsLocked_(journal);
+    var sheet = db_().getSheetByName('Programacao');
+    if (sheet && sheet.getLastRow() > 1) {
+      var rows = sheet.getDataRange().getValues();
+      rows.slice(1).forEach(function (row, index) {
+        if (titles[row[0]]) sheet.getRange(index + 2, 5).setValue(titles[row[0]]);
+      });
+    }
+    refreshFormsLocked_(journal.state);
+    return {formularios: entries.map(function (entry) {
+      return {id: entry.source.id, titulo: titles[entry.source.activityId]};
+    })};
+  });
+}
+
+function menuAtualizarFormularios() {
+  var result = atualizarFormularios();
+  SpreadsheetApp.getUi().alert('Nomes atualizados em ' + result.formularios.length + ' formulário(s). Inscrições e respostas preservadas.');
 }
 
 /** Copia para a mesma planilha, sem mudar compartilhamento ou exigir Drive write. */

@@ -85,6 +85,7 @@ Depois de reabrir a planilha, o menu **SEMINFO** reúne as ações de operação
 | Objetivo | Função |
 |---|---|
 | Atualizar Forms e acrescentar a programação, preservando inscrições | `atualizarProgramacaoSeminfo2026` |
+| Aplicar os novos títulos aos Forms e atividades existentes | `atualizarFormularios` |
 | Cadastrar ou atualizar uma atividade | `salvarAtividade` |
 | Excluir uma atividade sem inscrições no histórico | `apagarAtividade` |
 | Conferir configurações, gatilhos e cotas | `conferirSistema` |
@@ -172,3 +173,5 @@ O comando valida a sintaxe, executa as suítes, atualiza os JSONs de referência
 Organização e controle das inscrições da Semana da Informática.
 
 </div>
+
+Para aplicar os novos títulos em uma instalação existente, copie `Config.gs` e `Admin.gs` atualizados para o Apps Script, salve e reabra a planilha. Use **SEMINFO → Atualizar nomes dos formulários** (ou execute `atualizarFormularios`). A ação preserva respostas, inscrições, horários e vagas.
