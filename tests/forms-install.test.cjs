@@ -160,7 +160,10 @@ function environment(defaultMode = 'VERIFIED') {
     FormApp: { create: (name, published) => { stats.formsCreated++; const form = new Form(name, published); forms.set(form.id, form); return form; },
       openByUrl: url => { const form = [...forms.values()].find(form => form.getPublishedUrl() === url); assert(form); return form; },
       openById: id => { if (stats.lockHeld) stats.formOpensWhileLocked++; assert(forms.has(id), 'configured form must exist'); return forms.get(id); }, DestinationType: { SPREADSHEET: 'SPREADSHEET' } },
-    DriveApp: { getFilesByName: name => {
+    DriveApp: { getFileById: id => {
+      assert.ok(forms.has(id));
+      return {setName: name => { forms.get(id).documentTitle = name; }};
+    }, getFilesByName: name => {
       const matches = [...forms.values()].filter(form => form.documentTitle === name); let index = 0;
       return { hasNext: () => index < matches.length, next: () => { const form = matches[index++]; return {
         getId: () => form.id, isTrashed: () => false, getMimeType: () => 'application/vnd.google-apps.form'
@@ -1898,12 +1901,18 @@ test('Prévia CSP pendente exige completar dados antes de consumir respostas his
 
 test('Atualização da programação inclui Form da abertura e conserva inscrições existentes', () => {
   const e = environment(); e.begin();
+  e.context.salvarAtividade(e.activity('PALESTRA_DANIELE', {title: 'Nome antigo', capacity: 45}));
+  const before = e.context.readState_().activities.PALESTRA_DANIELE;
   const input = e.response('INSCRICAO'); e.context.processFormResponse_('INSCRICAO', input.form, input.response);
   const opening = e.manualRegistration('ABERTURA_2026'); opening.definition.title = 'Abertura — XXI Seminfo';
   e.context.SEMINFO_CONFIG = Object.freeze({...e.context.SEMINFO_CONFIG, FORMULARIOS_INSCRICAO_JSON: JSON.stringify([opening.definition])});
   const created = e.stats.formsCreated;
   const result = e.context.atualizarProgramacaoSeminfo2026();
   assert.equal(result.programacao.totalCadastradas, 18);
+  const title = 'Computação Quântica: Entendendo o contexto para inovar no futuro';
+  assert.deepEqual({...e.context.readState_().activities.PALESTRA_DANIELE}, {...before, title});
+  const row = e.context.db_().getSheetByName('Programacao').getDataRange().getValues().find(row => row[0] === 'PALESTRA_DANIELE');
+  assert.equal(row[4], title);
   assert.equal(opening.form.title, 'Abertura — XXI Seminfo');
   assert.equal(opening.form.accepting, false);
   assert.equal(e.context.getRegistrationFormDefinitions_().some(source => source.id === opening.form.id && source.activityId === 'ABERTURA_2026'), true);
@@ -1917,6 +1926,9 @@ test('Atualiza títulos dos Forms e atividades preservando respostas, inscriçõ
   const e = environment(); e.begin();
   const input = e.response('INSCRICAO'); e.context.processFormResponse_('INSCRICAO', input.form, input.response);
   const game = e.manualRegistration('OFICINA_GAMEMAKER');
+  const raw = e.context.db_().insertSheet('Respostas antigas GameMaker');
+  raw.formUrl = game.form.getPublishedUrl();
+  raw.getRange(1, 1, 2, 1).setValues([['Nome'], ['Resposta preservada']]);
   e.context.setConfig_('FORMULARIOS_INSCRICAO_JSON', JSON.stringify([
     ...e.context.getRegistrationFormDefinitions_(), game.definition]));
   e.context.instalarSistema();
@@ -1927,6 +1939,9 @@ test('Atualiza títulos dos Forms e atividades preservando respostas, inscriçõ
   const result = e.context.atualizarFormularios();
   const expected = 'Desenvolvimento de Jogos 2D com GameMaker — Tarde';
   assert.equal(game.form.title, expected);
+  assert.equal(game.form.documentTitle, expected);
+  assert.equal(raw.cells[1][0], 'Resposta preservada');
+  assert.ok(result.abasDeRespostas.some(entry => entry.formId === game.form.id && entry.aba === 'Respostas — ' + expected));
   assert.equal(e.context.getRegistrationFormDefinitions_().find(entry => entry.id === game.form.id).title, expected);
   assert.deepEqual({...e.context.readState_().activities.OFICINA_GAMEMAKER}, {...before, title: expected});
   assert.deepEqual(game.form.items.map(item => item.id), questionIds);

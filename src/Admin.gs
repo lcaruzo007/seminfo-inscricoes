@@ -471,10 +471,11 @@ function atualizarProgramacaoSeminfo2026() {
   prepararFormulariosSeminfo2026();
   var program = carregarProgramacaoSeminfo2026();
   var installation = instalarSistema();
-  return {programacao: program, instalacao: installation};
+  var titles = atualizarFormularios();
+  return {programacao: program, instalacao: installation, titulos: titles};
 }
 
-/** Atualiza somente títulos; conserva perguntas, respostas e dados operacionais. */
+/** Sincroniza títulos, arquivos e planilha; conserva respostas e dados operacionais. */
 function atualizarFormularios() {
   requireInstaller_();
   return withLock_(function () {
@@ -501,7 +502,12 @@ function atualizarFormularios() {
       if (titles[entry.activityId]) entry.title = titles[entry.activityId];
     });
     setConfig_('FORMULARIOS_INSCRICAO_JSON', JSON.stringify(definitions));
-    entries.forEach(function (entry) { entry.form.setTitle(titles[entry.source.activityId]); });
+    entries.forEach(function (entry) {
+      var title = titles[entry.source.activityId];
+      entry.form.setTitle(title);
+      DriveApp.getFileById(entry.source.id).setName(title);
+    });
+    var responseSheets = nomearAbasDeRespostas_(entries.map(function (entry) { return entry.source.id; }));
     rebuildViewsLocked_(journal);
     var sheet = db_().getSheetByName('Programacao');
     if (sheet && sheet.getLastRow() > 1) {
@@ -513,7 +519,7 @@ function atualizarFormularios() {
     refreshFormsLocked_(journal.state);
     return {formularios: entries.map(function (entry) {
       return {id: entry.source.id, titulo: titles[entry.source.activityId]};
-    })};
+    }), abasDeRespostas: responseSheets};
   });
 }
 
@@ -538,7 +544,7 @@ function responseSheetMatchesForm_(sheet, form) {
 }
 
 /** As abas nativas também passam a exibir a atividade, em vez de Formulário 3. */
-function nomearAbasDeRespostas_() {
+function nomearAbasDeRespostas_(formIds) {
   var result = [];
   var sources = getFormSources_();
   var importConfig = String(getConfig_().IMPORTACAO_CSP_JSON || '').trim();
@@ -556,6 +562,7 @@ function nomearAbasDeRespostas_() {
       sources.push({kind: 'IMPORTACAO_CSP', id: cspSource.formId, title: cspTitle});
     }
   }
+  if (formIds) sources = sources.filter(function (source) { return formIds.indexOf(source.id) >= 0; });
   sources.forEach(function (source) {
     var form = openFormWithDriveRetry_(source.id);
     if (cspSource && source.id === cspSource.formId) {

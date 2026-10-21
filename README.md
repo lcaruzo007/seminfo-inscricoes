@@ -94,7 +94,7 @@ Depois de reabrir a planilha, o menu **SEMINFO** reúne as ações de operação
 | Exportar uma lista de confirmados | `exportarConfirmados` |
 | Recuperar as abas de consulta | `reconstruirVisoes` |
 
-**Atualizar a programação** acrescenta os cadastros que faltam e preserva as alterações já feitas pela organização. As atividades pendentes aparecem em `Atividades` e `Programacao`; seus Forms ficam fechados até completar os dados e habilitar a recepção.
+**Atualizar a programação** acrescenta os cadastros que faltam e aplica os novos títulos em `Atividades`, `Programacao` e nos Forms, preservando horários, vagas e inscrições. As atividades pendentes aparecem em `Atividades` e `Programacao`; seus Forms ficam fechados até completar os dados e habilitar a recepção.
 
 **Começar do zero** é uma operação separada: `comecarSeminfo2026DoZero` apaga os dados operacionais, limpa as respostas dos Forms de inscrição/cancelamento e mantém as respostas do Form histórico da CSP para permitir sua importação após o reinício. Cria backups ocultos e carrega a programação novamente. Os IDs, links e perguntas dos Forms são mantidos. Consulte o [guia de reinicialização](docs/COMECAR_DO_ZERO.md) antes de usar essa função.
 
@@ -175,3 +175,5 @@ Organização e controle das inscrições da Semana da Informática.
 </div>
 
 Para aplicar os novos títulos em uma instalação existente, copie `Config.gs` e `Admin.gs` atualizados para o Apps Script, salve e reabra a planilha. Use **SEMINFO → Atualizar nomes dos formulários** (ou execute `atualizarFormularios`). A ação preserva respostas, inscrições, horários e vagas.
+
+A atualização também renomeia os arquivos dos Forms no Drive e as abas de respostas vinculadas. Copie também `src/appsscript.json` para o manifesto do projeto e autorize o acesso de edição ao Drive solicitado na próxima execução.
