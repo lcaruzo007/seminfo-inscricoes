@@ -1375,8 +1375,8 @@ test('Backup de integrantes exige IDs da origem, nome consistente, coach único 
   assert.match(data.requests[0].importErrors.join(' '), /CPF inválido/);
   e.context.prepararRecuperacaoEquipesCsp(invalid);
   const result = e.context.importarInscricoesAnterioresCsp();
-  assert.equal(result.ocupacao, 0); assert.equal(result.pendentesConferencia, 1);
-  assert.equal(e.context.readJournal_().byKey[e.form.id + ':SAVED_R1'], undefined);
+  assert.equal(result.ocupacao, 1); assert.equal(result.pendentesConferencia, 0);
+  assert.ok(e.context.readJournal_().byKey[e.form.id + ':SAVED_R1']);
 });
 
 test('Conteúdo alterado em backup existente não é sobrescrito e mudança após prévia bloqueia importação', () => {
@@ -1389,14 +1389,14 @@ test('Conteúdo alterado em backup existente não é sobrescrito e mudança apó
   assert.equal(sheet.cells[1][3], 'Nome modificado');
 });
 
-test('CPF de 12 dígitos fica pendente para conferência e pode ser corrigido sem perder a resposta original', () => {
+test('CPF incompleto permite confirmar equipe preservando a resposta original', () => {
   const e = teamCspEnvironment(2);
   const invalid = e.teamResponse('Equipe com pendência', ['Pessoa Fictícia - 134756596699']);
   e.teamResponse('Equipe válida', ['Pessoa Exemplo - 11144477735']);
   e.context.prepararImportacaoCsp();
   const report = e.context.importarInscricoesAnterioresCsp();
-  assert.equal(report.ocupacao, 1); assert.equal(report.pendentesConferencia, 1); assert.equal(report.restantes, 0);
-  assert.ok(!e.context.readJournal_().byKey[e.form.id + ':' + invalid.getId()]);
+  assert.equal(report.ocupacao, 2); assert.equal(report.pendentesConferencia, 0); assert.equal(report.restantes, 0);
+  assert.ok(e.context.readJournal_().byKey[e.form.id + ':' + invalid.getId()]);
   e.source.overrides = {[invalid.getId()]: {members: [{name: 'Pessoa Fictícia', cpf: '52998224725'}]}};
   e.context.setConfig_('IMPORTACAO_CSP_JSON', JSON.stringify(e.source));
   e.context.prepararImportacaoCsp();
@@ -1417,13 +1417,13 @@ test('Integrante repetido, nome de equipe repetido e CPF duplicado na equipe nã
   assert.equal(report.ocupacao, 1); assert.equal(report.pendentesConferencia, 1);
 });
 
-test('Número declarado divergente e textos ambíguos não são confirmados automaticamente', () => {
+test('Equipes com quantidade divergente e textos ambiguos sao confirmadas administrativamente', () => {
   const e = teamCspEnvironment();
   e.teamResponse('Incompleta', ['Pessoa Exemplo - 52998224725'], 3);
   e.teamResponse('Ambígua', ['Pessoa - 52998224725 - 11144477735']);
   e.context.prepararImportacaoCsp();
   const report = e.context.importarInscricoesAnterioresCsp();
-  assert.equal(report.ocupacao, 0); assert.equal(report.pendentesConferencia, 2);
+  assert.equal(report.ocupacao, 2); assert.equal(report.pendentesConferencia, 0);
 });
 
 test('Conflito de um integrante impede a equipe inteira e o CA recebe o problema sem e-mail fictício', () => {
@@ -1952,4 +1952,98 @@ test('Atualiza títulos dos Forms e atividades preservando respostas, inscriçõ
   const operations = e.context.readJournal_().operations.length;
   e.context.atualizarFormularios();
   assert.equal(e.context.readJournal_().operations.length, operations);
+});
+
+
+test('Leitor CSP aceita CPF com ponto final, colado ao nome e quebras HTML', () => {
+  const e = environment();
+  for (const raw of ['Pessoa Exemplo 529.982.247.25', 'Pessoa Exemplo529.982.247-25', 'Pessoa Exemplo52998224725', 'Pessoa Exemplo<br>CPF: 529.982.247-25&#x20;']) {
+    const member = e.context.parseCspTeamMember_(raw, 1);
+    assert.equal(member.name, 'Pessoa Exemplo');
+    assert.equal(member.cpf, '52998224725');
+  }
+  assert.throws(() => e.context.parseCspTeamMember_('Pessoa Exemplo 529.982.247.26', 1), /CPF inv.lido/);
+  assert.throws(() => e.context.parseCspTeamMember_('Pessoa Exemplo', 1), /CPF inv.lido/);
+  assert.throws(() => e.context.parseCspTeamMember_('Pessoa Exemplo 152998224725', 1), /CPF inv.lido/);
+});
+
+
+test('Recuperacao CSP salva todas as equipes incompletas e preserva textos sem duplicar', () => {
+  const e = teamCspEnvironment();
+  e.teamResponse('Sem CPF', ['Pessoa sem documento', 'Outra pessoa'], 3);
+  e.teamResponse('Faltam integrantes', ['Coach 52998224725'], 3);
+  e.teamResponse('Completa', ['Coach 11144477735']);
+  e.context.prepararImportacaoCsp();
+  const report = e.context.importarInscricoesAnterioresCsp();
+  assert.equal(report.totalEquipesRecuperadas, 3);
+  assert.equal(report.pendentesConferencia, 0);
+  const rows = e.context.tableRows_('Recuperacao_CSP');
+  assert.equal(rows.length, 3);
+  assert.equal(rows.find(r => r.EQUIPE === 'Sem CPF').TEXTOS_ORIGINAIS, 'Pessoa sem documento\n\nOutra pessoa\n\n');
+  assert.equal(rows.find(r => r.EQUIPE === 'Sem CPF').SITUACAO, 'confirmed');
+  assert.equal(rows.find(r => r.EQUIPE === 'Completa').SITUACAO, 'confirmed');
+  e.context.importarInscricoesAnterioresCsp();
+  assert.equal(e.context.tableRows_('Recuperacao_CSP').length, 3);
+});
+
+
+test('Importacao CSP inclui linhas existentes apenas no Sheets e nao duplica respostas do Forms', () => {
+ const e = teamCspEnvironment(60);
+ const existing = e.teamResponse('Equipe no Forms', ['Coach 52998224725']);
+ const sheet = e.context.db_().insertSheet('Respostas CSP');
+ sheet.formUrl = e.form.getPublishedUrl();
+ sheet.appendRow(['Carimbo de data/hora', 'Sua equipe e', 'Nome da equipe', 'Quantos integrantes', '(Coach) Nome do integrante 1, CPF, turma e telefone', '(se houver) Nome do integrante 2, CPF e turma']);
+ sheet.appendRow([existing.getTimestamp(), 'Tecnico', 'Equipe no Forms', '1', 'Coach 52998224725', '']);
+ sheet.appendRow([new Date('2026-10-06T15:00:00Z'), 'Tecnico', 'Equipe so no Sheets', '3', 'Pessoa sem CPF', 'Outra pessoa']);
+ const preview = e.context.prepararImportacaoCsp();
+ assert.equal(preview.total, 2);
+ const report = e.context.importarInscricoesAnterioresCsp();
+ assert.equal(report.ocupacao, 2);
+ assert.equal(report.pendentesConferencia, 0);
+ e.context.prepararImportacaoCsp();
+ assert.equal(e.context.importarInscricoesAnterioresCsp().ocupacao, 2);
+ assert.equal(e.context.tableRows_('Equipes').length, 2);
+});
+
+
+test('Relatorio CSP mostra motivos de equipes nao confirmadas mesmo em uma segunda execucao', () => {
+ const e = teamCspEnvironment(1);
+ e.teamResponse('Primeira', ['Coach 52998224725']);
+ e.teamResponse('Sem vaga', ['Coach 11144477735']);
+ e.context.prepararImportacaoCsp();
+ const first = e.context.importarInscricoesAnterioresCsp();
+ assert.equal(first.equipesNaoConfirmadas.length, 1);
+ assert.equal(first.equipesNaoConfirmadas[0].equipe, 'Sem vaga');
+ assert.equal(first.equipesNaoConfirmadas[0].resultado, 'full');
+ assert.equal(e.context.importarInscricoesAnterioresCsp().equipesNaoConfirmadas[0].resultado, 'full');
+});
+
+
+test('Recuperacao da lista antiga completa as 13 equipes com as cinco ausentes sem duplicar', () => {
+ const e = teamCspEnvironment(60);
+ vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'RecuperacaoListaAntigaCsp.gs'), 'utf8'), e.context);
+ const existingNames = ["Veneninho", "Backend Girls", "Avengers", "Vocaro.log()", "Os paredes de marmore", "67 Boys", "Sem ideia", "Cybercoders", "Kisses kisses", "Os Guri de Calcinha", "As Meninas Superpoderosas", "ProGram3rs", "Estagi\u00e1rios do Banco Master"];
+ existingNames.forEach(name => e.teamResponse(name, ['Pessoa sem CPF']));
+ e.context.prepararImportacaoCsp();
+ assert.equal(e.context.importarInscricoesAnterioresCsp().ocupacao, 13);
+ const report = e.context.importarEquipesFaltantesListaAntigaCsp();
+ assert.equal(report.importadasAgora, 5);
+ assert.equal(report.ocupacao, 18);
+ assert.equal(e.context.tableRows_('Equipes').length, 18);
+ const coffee = Object.values(e.context.readState_().registrations).find(team => team.teamName.startsWith('coffee ='));
+ assert.equal(coffee.teamName, e.context.SEMINFO_EQUIPES_FALTANTES_LISTA_ANTIGA[0].teamName);
+ assert.equal(coffee.members.length, 3);
+ const babas = Object.values(e.context.readState_().registrations).find(team => team.teamName.startsWith('Bab'));
+ assert.equal(babas.members.length, 3);
+ assert.equal(babas.members[2].cpf, '');
+ const cquer = Object.values(e.context.readState_().registrations).find(team => team.teamName === 'Cquer+');
+ assert.equal(cquer.members.length, 3);
+ assert.equal(cquer.members[0].cpf, '16977765666');
+ assert.equal(cquer.members[1].name, 'Julia Tejada');
+ assert.equal(cquer.members[2].cpf, '13947279680');
+ const second = e.context.importarEquipesFaltantesListaAntigaCsp();
+ assert.equal(second.importadasAgora, 0);
+ assert.equal(second.ocupacao, 18);
+ e.context.cancelarEquipeCsp(coffee.id, 'Cancelamento solicitado pela organizacao');
+ assert.equal(e.context.importarEquipesFaltantesListaAntigaCsp().ocupacao, 17);
 });

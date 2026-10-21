@@ -291,7 +291,7 @@ var SemDomain = (function () {
         if ((registration.entityType === 'EQUIPE') !== (state.activities[registration.activityId].capacityUnit === 'equipes')) throw new Error('Inscrição incompatível com a unidade de capacidade.');
         occupied[registration.activityId] = (occupied[registration.activityId] || 0) + 1;
         var cpfs = registration.entityType === 'EQUIPE' ? registration.members.map(function (member) { return member.cpf; }) : [registration.cpf];
-        cpfs.forEach(function (cpf) {
+        cpfs.filter(function (cpf) { return !!cpf; }).forEach(function (cpf) {
           var pair = cpf + '/' + registration.activityId;
           if (owns(duplicate, pair)) throw new Error('Inscrição ativa duplicada.');
           duplicate[pair] = true;
@@ -349,7 +349,7 @@ var SemDomain = (function () {
           identifier(registration.id, 'ID da inscrição');
           if (owns(next.registrations, registration.id)) throw new Error('ID de inscrição já existente.');
           if (registration.status !== CONFIRMED) throw new Error('A nova inscrição deve estar confirmada.');
-          registration.cpf = normalizeCpf(registration.cpf);
+          if (!(registration.entityType === 'EQUIPE' && registration.administrativeIncomplete === true)) registration.cpf = normalizeCpf(registration.cpf);
           registration.activity = validateActivity(registration.activity);
           registration.createdAt = instant(registration.createdAt, 'Data da inscrição');
           if (registration.activityId !== registration.activity.id) throw new Error('Snapshot da atividade incompatível.');
@@ -395,6 +395,17 @@ var SemDomain = (function () {
 
   function validateTeamRegistration(input) {
     var team = copy(input);
+    if (team.administrativeIncomplete === true) {
+      team.teamName = text(team.teamName, 'Equipe', true);
+      if (!Array.isArray(team.members) || team.members.length > 3) throw new Error('Integrantes incompat?veis.');
+      team.members.forEach(function (member, index) {
+        member.name = text(member.name, 'Nome', false);
+        member.cpf = member.cpf ? normalizeCpf(member.cpf) : '';
+        member.role = index === 0 ? 'coach' : 'integrante';
+      });
+      team.cpf = team.members[0] && team.members[0].cpf || '';
+      return team;
+    }
     team.cpf = normalizeCpf(String(team.cpf || ''));
     team.teamName = text(team.teamName, 'Nome da equipe', true);
     if (team.teamName.length > 200) throw new Error('Nome da equipe excede 200 caracteres.');

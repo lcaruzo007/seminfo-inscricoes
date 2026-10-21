@@ -170,7 +170,66 @@ function prepararRecuperacaoEquipesCsp(rows, teamRows) {
   return report;
 }
 
+/** Completa o Forms com linhas que sobreviveram somente na aba nativa. */
 function getCspImportResponses_(source, form, itemIds) {
+  var responses = getCspStoredImportResponses_(source, form, itemIds);
+  if (source.schema !== 'equipes') return responses;
+  var config = getConfig_(), books = [db_()];
+  var destination = formDestinationId_(form);
+  if (destination && destination !== books[0].getId()) books.push(SpreadsheetApp.openById(destination));
+  if (config.CSP_RESPONSE_SHEET_ID && config.CSP_RESPONSE_SPREADSHEET_ID && !books.some(function (book) { return book.getId() === config.CSP_RESPONSE_SPREADSHEET_ID; })) {
+    books.push(SpreadsheetApp.openById(String(config.CSP_RESPONSE_SPREADSHEET_ID)));
+  }
+  function normalized(value) {
+    return String(value || '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  }
+  function identity(date, name) { return Math.floor(date.getTime() / 1000) + ':' + normalized(name); }
+  var known = {};
+  responses.forEach(function (response) {
+    var name = '';
+    response.getItemResponses().forEach(function (answer) {
+      if (String(answer.getItem().getId()) === String(itemIds.TEAM_NAME)) name = answer.getResponse();
+    });
+    known[identity(response.getTimestamp(), name)] = true;
+  });
+  books.forEach(function (book) { book.getSheets().forEach(function (sheet) {
+    if (!responseSheetMatchesForm_(sheet, form)) return;
+    var rows = sheet.getDataRange().getValues();
+    if (!rows.length) return;
+    var headers = rows[0].map(normalized), columns = {};
+    var patterns = {TEAM_NAME: /^nome da equipe$/, TEAM_TYPE: /^sua equipe e$/, TEAM_SIZE: /^quantos integrantes/,
+      MEMBER1: /^(coach )?nome do integrante 1/, MEMBER2: /^(se houver )?nome do integrante 2/, MEMBER3: /^(se houver )?nome do integrante 3/};
+    Object.keys(patterns).forEach(function (key) {
+      var matches = headers.map(function (header, index) { return patterns[key].test(header) ? index : -1; }).filter(function (index) { return index >= 0; });
+      if (matches.length === 1) columns[key] = matches[0];
+    });
+    if (columns.TEAM_NAME === undefined) return;
+    rows.slice(1).forEach(function (row, index) {
+      if (!row.some(function (value) { return value !== '' && value !== null; })) return;
+      var name = String(row[columns.TEAM_NAME] || '').trim();
+      var timestamp = row[0];
+      if (Object.prototype.toString.call(timestamp) !== '[object Date]') {
+        var dateText = String(timestamp || '').trim();
+        timestamp = /^\d{2}\/\d{2}\/\d{4} /.test(dateText) ? Utilities.parseDate(dateText, config.FUSO, 'dd/MM/yyyy HH:mm:ss') : new Date(dateText);
+      }
+      if (!isFinite(timestamp.getTime())) throw new Error('Data invalida na aba ' + sheet.getName() + ', linha ' + (index + 2) + '.');
+      var fingerprint = identity(timestamp, name);
+      if (known[fingerprint]) return;
+      known[fingerprint] = true;
+      var responseId = 'SHEET_' + hash_(source.formId + ':' + fingerprint).slice(0, 32);
+      responses.push({getId: function () { return responseId; }, getTimestamp: function () { return timestamp; },
+        getItemResponses: function () {
+          return Object.keys(columns).map(function (key) {
+            return {getItem: function () { return form.getItemById(Number(itemIds[key])); },
+              getResponse: function () { return String(row[columns[key]] || ''); }};
+          });
+        }});
+    });
+  }); });
+  return responses;
+}
+
+function getCspStoredImportResponses_(source, form, itemIds) {
   if (!source.backupSheetName) return form.getResponses();
   var sheet = db_().getSheetByName(source.backupSheetName);
   if (!sheet) throw new Error('Aba de backup CSP não encontrada: ' + source.backupSheetName + '.');
@@ -273,19 +332,19 @@ function resolveCspImportItems_(source, form) {
 }
 
 function parseCspTeamMember_(raw, number) {
-  raw = String(raw || '').trim();
+  raw = String(raw || '').replace(/<br\s*\/?\s*>/gi, '\n').replace(/&#x20;|&nbsp;/gi, ' ').trim();
   if (!raw || /^(nao|não|nenhum|não há|nao ha|n\/a|-)$/i.test(raw)) {
     if (number === 1) throw new Error('Integrante 1 (coach) não informado.');
     return null;
   }
-  var labeled = /cpf\s*[:=-]?\s*(\d{3}\.\d{3}\.\d{3}\s*-\s*\d{2}|\d{9,14})\b/i.exec(raw);
+  var labeled = /cpf\s*[:=-]?\s*(\d{3}\.\d{3}\.\d{3}\s*[-.]\s*\d{2}|\d{9,14})\b/i.exec(raw);
   var candidates = [];
   if (labeled) candidates = [{value: labeled[1], index: labeled.index + labeled[0].indexOf(labeled[1])}];
   else {
-    var regex = /\b\d{3}\.\d{3}\.\d{3}\s*-\s*\d{2}\b/g, match;
+    var regex = /(?<!\d)\d{3}\.\d{3}\.\d{3}\s*[-.]\s*\d{2}\b/g, match;
     while ((match = regex.exec(raw))) candidates.push({value: match[0], index: match.index});
     if (!candidates.length) {
-      regex = /\b\d{9,14}\b/g;
+      regex = /(?<!\d)\d{11}(?!\d)/g;
       while ((match = regex.exec(raw))) candidates.push({value: match[0], index: match.index});
     }
   }
@@ -387,6 +446,28 @@ function cspImportOutcome_(state, request) {
   // Permite a migração com a recepção geral fechada, sem reabrir nenhum Form.
   var decisionState = Object.assign({}, state, {accepting: true});
   var outcome = enrichOutcome_(state, request, request.kind === 'INSCRICAO_EQUIPE' ? SemDomain.decideTeam(decisionState, request) : SemDomain.decide(decisionState, request));
+  if (request.kind === 'INSCRICAO_EQUIPE' && outcome.code === 'invalid' && !/CPF repetido/.test(outcome.message)) {
+    var activity = state.activities[request.activityId];
+    if (activity && activity.capacityUnit === 'equipes' && activity.status === 'aberta' &&
+        SemDomain.occupancy(state, request.activityId) < activity.capacity) {
+      var members = request.recoveredAt ? request.members.map(function (member) {
+        var saved = Object.assign({}, member);
+        try { saved.cpf = SemDomain.normalizeCpf(saved.cpf); } catch (_) { saved.cpf = ''; }
+        return saved;
+      }) : request.rawMembers.map(function (raw, index) {
+        if (!raw.trim()) return null;
+        try { return parseCspTeamMember_(raw, index + 1); }
+        catch (_) { return {name: raw.split(/[\n,;\d]/)[0].replace(/\s*[-:]\s*$/, '').trim(), cpf: '', raw: raw, role: index === 0 ? 'coach' : 'integrante'}; }
+      }).filter(function (member) { return !!member; });
+      var team = {id: request.key + ':equipe', entityType: 'EQUIPE', administrativeIncomplete: true,
+        teamName: request.teamName || 'Equipe sem nome (' + request.responseId + ')', teamType: request.teamType || '',
+        cpf: members[0] && members[0].cpf || '', members: members, declaredSize: request.declaredSize,
+        dataIssues: request.importErrors.concat([outcome.message]), rawMembers: request.rawMembers,
+        activityId: request.activityId, activity: activity, status: 'confirmada', createdAt: request.submittedAt};
+      outcome = {code: 'confirmed', message: 'Equipe confirmada administrativamente; completar dados depois. ' + outcome.message,
+        activity: activity, changes: [{type: 'CONFIRM', registration: team}]};
+    }
+  }
   if (outcome.participant) outcome.participant.identitySource = request.identitySource;
   return outcome;
 }
@@ -446,6 +527,29 @@ function prepararImportacaoCsp() {
   });
 }
 
+/** Salva todas as equipes da fonte, inclusive as que ainda precisam de dados. */
+function salvarTodasEquipesRecuperadasCsp_(requests, journal) {
+  var headers = ['CHAVE', 'EQUIPE', 'TIPO_EQUIPE', 'QTD_DECLARADA', 'QTD_IDENTIFICADA', 'INTEGRANTES_JSON',
+    'TEXTOS_ORIGINAIS', 'SITUACAO', 'DETALHE', 'FORM_ID', 'RESPOSTA_ID'];
+  var name = 'Recuperacao_CSP', byKey = {}, order = [];
+  tableRows_(name).forEach(function (row) {
+    byKey[row.CHAVE] = headers.map(function (header) { return row[header]; });
+    order.push(row.CHAVE);
+  });
+  requests.forEach(function (request) {
+    if (request.kind !== 'INSCRICAO_EQUIPE') return;
+    var previous = journal.byKey[request.key];
+    var outcome = previous ? previous.outcome : cspImportOutcome_(journal.state, request);
+    if (!Object.prototype.hasOwnProperty.call(byKey, request.key)) order.push(request.key);
+    byKey[request.key] = [request.key, request.teamName, request.teamType || '', request.declaredSize || '',
+      request.members.length, JSON.stringify(request.members), request.rawMembers.join('\n\n'),
+      outcome.code === 'invalid' ? 'pendente_conferencia' : previous ? outcome.code : 'aguardando_importacao',
+      outcome.message, request.formId, request.responseId];
+  });
+  writeTable_(name, headers, order.map(function (key) { return byKey[key]; }));
+  return db_().getUrl() + '#gid=' + db_().getSheetByName(name).getSheetId();
+}
+
 /** A conta instaladora importa a prévia conferida em lotes recuperáveis. */
 function importarInscricoesAnterioresCsp() {
   requireInstaller_(); validateMailConfig_();
@@ -465,6 +569,7 @@ function importarInscricoesAnterioresCsp() {
     if (!snapshot.started && journal.head !== snapshot.head) throw new Error('As inscrições ou o catálogo mudaram desde a prévia. Prepare uma nova prévia.');
     var unit = cspTeamUnitOperation_(journal.state, source);
     if (unit) commitOperationLocked_(journal, unit);
+    if (source.schema === 'equipes') salvarTodasEquipesRecuperadasCsp_(data.requests, readJournal_());
     snapshot.started = true;
     props_().setProperty('SEMINFO_IMPORTACAO_CSP', JSON.stringify(snapshot));
   });
@@ -491,15 +596,32 @@ function importarInscricoesAnterioresCsp() {
     assertGeneration();
     var journal = readJournal_();
     rebuildViewsLocked_(journal);
-    var pendingReview = 0;
+    var recoveryUrl = source.schema === 'equipes' ? salvarTodasEquipesRecuperadasCsp_(data.requests, journal) : '';
+    var pendingReview = 0, pendingTeams = [];
     var remaining = data.requests.filter(function (request) {
       if (journal.byKey[request.key]) return false;
-      if (request.kind === 'INSCRICAO_EQUIPE' && cspImportOutcome_(journal.state, request).code === 'invalid') { pendingReview++; return false; }
+      if (request.kind === 'INSCRICAO_EQUIPE') {
+        var outcome = cspImportOutcome_(journal.state, request);
+        if (outcome.code === 'invalid') {
+          pendingReview++;
+          pendingTeams.push({equipe: request.teamName, respostaId: request.responseId, motivo: outcome.message});
+          return false;
+        }
+      }
       return true;
     }).length;
     return {processadasNesteLote: processed, jaProcessadas: already, resultados: counts, restantes: remaining,
       ocupacao: SemDomain.occupancy(journal.state, source.activityId), unidadeCapacidade: source.schema === 'equipes' ? 'equipes' : 'pessoas',
-      pendentesConferencia: pendingReview, atividade: source.activityId,
+      totalEquipesRecuperadas: source.schema === 'equipes' ? data.requests.length : 0, recuperacaoUrl: recoveryUrl,
+      pendentesConferencia: pendingReview, equipesPendentes: pendingTeams, atividade: source.activityId,
+      equipesNaoConfirmadas: data.requests.filter(function (request) { return request.kind === 'INSCRICAO_EQUIPE'; }).map(function (request) {
+        var previous = journal.byKey[request.key];
+        var team = journal.state.registrations[request.key + ':equipe'];
+        if (team && team.status === 'confirmada') return null;
+        var outcome = previous ? previous.outcome : cspImportOutcome_(journal.state, request);
+        return {equipe: request.teamName, respostaId: request.responseId, resultado: team ? team.status : outcome.code,
+          motivo: team ? team.cancellationReason || '' : outcome.message};
+      }).filter(function (entry) { return !!entry; }),
       formularioIntegrado: getFormSources_().some(function (entry) { return entry.kind === 'INSCRICAO' && entry.id === source.formId; }), pendencias: issues};
   });
   try { refreshFormsSafely_(); }
