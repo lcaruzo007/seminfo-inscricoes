@@ -18,6 +18,7 @@ function onOpen() {
     .addItem('Cadastrar / atualizar atividade', 'menuSalvarAtividade')
     .addItem('Apagar atividade', 'menuApagarAtividade')
     .addItem('Carregar programação XXI Seminfo', 'menuProgramacaoSeminfo2026')
+    .addItem('Atualizar nomes dos formulários', 'menuAtualizarFormularios')
     .addItem('Começar do zero com os mesmos Forms', 'menuComecarDoZero')
     .addItem('Atualizar opções dos Forms', 'atualizarOpcoesFormularios')
     .addItem('Consultar ocupação', 'menuOcupacao')
@@ -372,12 +373,50 @@ function openFormWithDriveRetry_(formId) {
 }
 
 /** Atualiza também instalações existentes; mantém IDs, vínculos e mapeamentos. */
+function formulariosPublicosSeminfo2026_() {
+  var definitions = JSON.parse(String(getConfig_().FORMULARIOS_PUBLICOS_SEMINFO_JSON || '[]'));
+  if (!Array.isArray(definitions)) throw new Error('FORMULARIOS_PUBLICOS_SEMINFO_JSON deve ser uma lista.');
+  return definitions;
+}
+
+/** Confere a URL publicada; um ID de participação nunca é usado como ID de edição. */
+function resolverFormularioPublicoSeminfo_(definition, configured) {
+  function canonical(url) { return String(url).split('?')[0].replace(/\/$/, ''); }
+  if (!/^https:\/\/docs\.google\.com\/forms\/d\/(?:e\/)?[A-Za-z0-9_-]+\/viewform$/.test(canonical(definition.url))) {
+    throw new Error('URL de participação inválida para ' + definition.title + '.');
+  }
+  var candidates = configured.filter(function (entry) { return entry.activityId === definition.activityId; });
+  for (var i = 0; i < candidates.length; i++) {
+    var installed = openFormWithDriveRetry_(candidates[i].id);
+    if (canonical(installed.getPublishedUrl()) === canonical(definition.url)) return installed;
+  }
+  try {
+    var direct = FormApp.openByUrl(definition.url);
+    if (canonical(direct.getPublishedUrl()) === canonical(definition.url)) return direct;
+  } catch (_) { /* A URL pública pode exigir a busca do arquivo de edição no Drive. */ }
+  var names = [definition.driveTitle || definition.title, definition.title];
+  for (var nameIndex = 0; nameIndex < names.length; nameIndex++) {
+    var files = DriveApp.getFilesByName(names[nameIndex]);
+    while (files.hasNext()) {
+      var file = files.next();
+      if (file.isTrashed() || file.getMimeType() !== 'application/vnd.google-apps.form') continue;
+      var form = openFormWithDriveRetry_(file.getId());
+      if (canonical(form.getPublishedUrl()) === canonical(definition.url)) return form;
+    }
+  }
+  throw new Error('Não foi possível localizar o Form de ' + definition.title + ' pela conta instaladora. Acrescente seu ID de edição em FORMULARIOS_INSCRICAO_JSON, com activityId ' + definition.activityId + ', e repita a atualização.');
+}
+
 function prepararFormulariosSeminfo2026() {
   requireInstaller_();
   var currentConfig = String(getConfig_().FORMULARIOS_INSCRICAO_JSON || '[]');
   var current = getRegistrationFormDefinitions_();
   var expected = JSON.parse(SEMINFO_CONFIG.FORMULARIOS_INSCRICAO_JSON);
   var merged = current.filter(function (entry) { return !!entry.id; });
+  formulariosPublicosSeminfo2026_().forEach(function (entry) {
+    var form = resolverFormularioPublicoSeminfo_(entry, merged);
+    expected.push({id: form.getId(), activityId: entry.activityId, title: entry.title, items: entry.items || {}});
+  });
   expected.forEach(function (entry) {
     var existing = merged.find(function (item) { return item.id === entry.id; });
     if (existing && existing.activityId !== entry.activityId) throw new Error('O Form ' + entry.id + ' já aponta para outra atividade. Preserve seu vínculo antes de continuar.');
@@ -401,24 +440,25 @@ function programacaoSeminfo2026_() {
       instructor: instructor, location: location, capacity: capacity, pending: pending || ''};
   }
   return [
-    item('ABERTURA_2026', '2026-10-26', '', '', 'Abertura — XXI Seminfo', 'programacao', '', 'Auditório Novo', null, 'Horário, término, capacidade e detalhes da abertura.'),
-    item('CREDENCIAMENTO_2026', '2026-10-26', '13:00', '', 'Credenciamento — registrar presença', '', '', 'Auditório Novo', null, 'Término; atividade de presença, sem Form de inscrição informado.'),
-    item('HOMENAGEM_CRIS', '2026-10-26', '13:30', '', 'Homenagem Cris — Cesta', '', '', 'Auditório Novo', null, 'Término; sem Form informado.'),
-    item('PALESTRA_RENATO', '2026-10-26', '13:50', '', 'Palestra — Renato', 'palestra', 'Renato', 'Auditório Novo', null, 'Término, capacidade e Form.'),
-    item('COFFEE_BREAK', '2026-10-26', '15:00', '', 'Coffee break', '', '', 'Auditório Novo', null, 'Término; sem Form informado.'),
-    item('NOITE_26', '2026-10-26', '19:00', '23:00', 'Palestra / Oficina online — a confirmar', '', '', '', null, 'Atividade, ministrante, local, capacidade e Form.'),
-    item('OFICINA_GAMEMAKER', '2026-10-27', '13:00', '17:00', 'Desenvolvimento de Jogos 2D com GameMaker — Tarde', 'oficina', 'Ricardo Martins', 'Sala 14', 30),
-    item('OFICINA_YASMIN_GABRIEL', '2026-10-27', '13:00', '17:00', 'Oficina — Yasmin e Gabriel', 'oficina', 'Yasmin e Gabriel', 'Sala 16', 30, 'Tema e Form.'),
-    item('OFICINA_BLENDER', '2026-10-27', '13:00', '17:00', 'Introdução ao 3D com Blender', 'oficina', 'Caio H.', 'Sala 15', 30),
-    item('OFICINA_OLLAMA', '2026-10-27', '13:00', '17:00', 'Rodando Inteligência Artificial no seu PC com Ollama', 'oficina', 'Darosa', 'Sala 5 (redes)', 15),
-    item('OFICINA_IA_ALEM_CHAT', '2026-10-27', '13:00', '17:00', 'Oficina IA Além do Chat', 'oficina', 'Rafaela', 'Sala 13', 30),
-    item('OFICINA_JOGOS_NOITE', '2026-10-27', '19:00', '23:00', 'Desenvolvimento de Jogos 2D com GameMaker — Noite', 'oficina', 'Ricardo Martins', 'Sala 14', 30),
-    item('PALESTRA_BIO', '2026-10-27', '', '', 'Acervo Brasileiro de Referências sobre Eugenia (ABREU): o uso de ferramentas Google na construção de uma plataforma de divulgação científica', 'palestra', '', 'Auditório H', null, 'Início, término, capacidade e ministrante.'),
-    item('OFICINA_SEGURANCA', '2026-10-28', '13:00', '17:00', 'Segurança da Informação na Prática: Aprenda, Identifique e Proteja-se', 'oficina', 'Rafaela', 'Sala 15 — a confirmar', 30, 'Confirmar sala 15.'),
-    item('PALESTRA_DANIELE', '2026-10-28', '19:30', '', 'Computação Quântica: Entendendo o contexto para inovar no futuro', 'palestra', 'Daniele Tavares', 'Online', null, 'Término e capacidade.'),
-    item('CSP_2026', '2026-10-29', '13:00', '16:00', 'Competição Seminfo de Programação — CSP', 'competicao', '', 'Prédio da Informática', 60),
-    item('ENCERRAMENTO_2026', '2026-10-29', '16:00', '17:00', 'Encerramento', '', '', 'Auditório H', null, 'Sem Form de inscrição informado.'),
-    item('PALESTRA_JOHNATAN', '2026-10-29', '19:30', '', 'Ainda precisamos aprender a programar? O futuro da Engenharia de Software na era da Inteligência Artificial', 'palestra', 'Johnatan UFLA', 'Online', null, 'Término e capacidade.')
+    item('ABERTURA_2026', '2026-10-26', '13:00', '17:00', 'Abertura — XXI Seminfo', 'programacao', '', 'Auditório Novo', null, 'Capacidade. Bloco com credenciamento, palestra de Douglas e coffee break.'),
+    item('CREDENCIAMENTO_2026', '2026-10-26', '', '', 'Credenciamento e registro de presença', '', '', 'Auditório Novo', null, 'Integra o bloco das 13h às 17h; horários individuais e Form não informados.'),
+    // Os IDs históricos são mantidos para preservar inscrições e vínculos dos Forms.
+    item('PALESTRA_RENATO', '2026-10-26', '', '', 'Inteligência Artificial e Inovação: muito além de um prompt e um conjunto de dados', 'palestra', 'Prof. Dr. Douglas Donizeti de Castilho Braz', 'Auditório Novo', null, 'Integra o bloco das 13h às 17h; horários individuais, capacidade e Form não informados.'),
+    item('COFFEE_BREAK', '2026-10-26', '', '', 'Coffee break', '', '', 'Auditório Novo', null, 'Integra o bloco das 13h às 17h; horários individuais e Form não informados.'),
+    item('NOITE_26', '2026-10-26', '19:00', '', 'Troubleshooting e dados no mundo real', 'palestra', 'Ana Carolina Brazão', 'Online — Google Meet', null, 'Término e capacidade.'),
+    item('OFICINA_GAMEMAKER', '2026-10-27', '13:00', '17:00', 'Desenvolvimento de Jogos 2D com GameMaker — Tarde', 'oficina', 'Ricardo José Martins', 'Sala 14', 30),
+    item('OFICINA_YASMIN_GABRIEL', '2026-10-27', '13:00', '17:00', 'Pipeline de Dados em Tempo Real: Do Zero ao Dashboard', 'oficina', 'Tiago Fernandes Moraes', 'Sala 16', 30),
+    item('OFICINA_BLENDER', '2026-10-27', '13:00', '17:00', 'Introdução ao 3D com Blender', 'oficina', 'Caio Henrique Magalhães', 'Sala 15', 20),
+    item('OFICINA_OLLAMA', '2026-10-27', '13:00', '17:00', 'Rodando Inteligência Artificial no seu PC com Ollama', 'oficina', 'Gabriel Madeira', 'Sala 5 — Redes', 15),
+    item('OFICINA_IA_ALEM_CHAT', '2026-10-27', '13:00', '17:00', 'IA Além do Chat: Guia Prático para Geração de Imagens e Vídeos com o Gemini', 'oficina', 'Rafaela Alves Magalhães e Felipe Antony Baquião Avelar', 'Sala 13', 30),
+    item('OFICINA_C', '2026-10-27', '13:00', '17:00', 'Introdução à linguagem C', 'oficina', 'Matheus Matias dos Santos, Matheus Henrique Dias e Felipe Augusto de Melo Lozano', 'Cesário Coimbra — Sala 09', 40),
+    item('OFICINA_JOGOS_NOITE', '2026-10-27', '19:00', '23:00', 'Desenvolvimento de Jogos 2D com GameMaker — Noite', 'oficina', 'Ricardo José Martins', 'Sala 14', 30),
+    item('PALESTRA_BIO', '2026-10-27', '13:30', '', 'Acervo Brasileiro de Referências sobre Eugenia (ABREU): o uso de ferramentas Google na construção de uma plataforma de divulgação científica', 'palestra', '', 'Auditório H', null, 'Término, capacidade e palestrante.'),
+    item('OFICINA_SEGURANCA', '2026-10-28', '13:00', '17:00', 'Segurança da Informação na Prática: Aprenda, Identifique e Proteja-se', 'oficina', 'Rafaela Alves Magalhães e Nycollas Icrad Luz Machado', 'Sala 15', 30),
+    item('PALESTRA_DANIELE', '2026-10-28', '19:30', '', 'Computação Quântica: Entendendo o contexto para inovar no futuro', 'palestra', 'Daniele Nazaré Tavares', 'Online — Google Meet', null, 'Término e capacidade.'),
+    item('CSP_2026', '2026-10-29', '13:00', '15:30', 'Competição Seminfo de Programação — CSP', 'competicao', '', 'Prédio da Informática', 60),
+    item('ENCERRAMENTO_2026', '2026-10-29', '15:30', '17:00', 'Encerramento', '', '', 'Auditório H', null, 'Sem Form de inscrição informado.'),
+    item('PALESTRA_JOHNATAN', '2026-10-29', '19:30', '', 'Ainda precisamos aprender a programar? O futuro da Engenharia de Software na era da Inteligência Artificial', 'palestra', 'Prof. Dr. Johnatan Alves de Oliveira', 'Online — Google Meet', null, 'Término e capacidade.')
   ];
 }
 
@@ -433,9 +473,56 @@ function atividadeDaProgramacao_(entry) {
     instructor: entry.instructor, location: entry.location,
     start: entry.start ? entry.date + 'T' + entry.start + ':00-03:00' : '',
     end: entry.end ? entry.date + 'T' + entry.end + ':00-03:00' : '',
-    capacity: entry.capacity, status: !entry.type || !entry.start || !entry.end || !entry.capacity || entry.id === 'OFICINA_YASMIN_GABRIEL' ? 'pendente' : 'aberta'};
+    capacity: entry.capacity, status: !entry.type || !entry.start || !entry.end || !entry.capacity ? 'pendente' : 'aberta'};
   if (entry.id === 'CSP_2026') activity.capacityUnit = 'equipes';
   return SemDomain.validateActivity(activity);
+}
+
+/** Aplica a versão final inteira em uma operação, incluindo os horários dos inscritos. */
+function sincronizarCatalogoProgramacaoFinalSeminfo2026_() {
+  requireInstaller_();
+  return withLock_(function () {
+    var journal = readJournal_(), changed = [], created = [], updated = [], retired = [];
+    var obsoleteTimes = ['CREDENCIAMENTO_2026', 'PALESTRA_RENATO', 'COFFEE_BREAK', 'NOITE_26'];
+    function sameDay(instant, date) {
+      var beginning = Date.parse(date + 'T00:00:00-03:00'), value = Date.parse(instant);
+      return isFinite(value) && value >= beginning && value < beginning + 86400000;
+    }
+    programacaoSeminfo2026_().forEach(function (entry) {
+      if ((journal.state.deletedActivities || {})[entry.id]) return;
+      var existing = journal.state.activities[entry.id], activity = atividadeDaProgramacao_(entry);
+      if (existing) {
+        if (!activity.capacity && existing.capacity) activity.capacity = existing.capacity;
+        if (!activity.start && obsoleteTimes.indexOf(entry.id) < 0 && sameDay(existing.start, entry.date)) activity.start = existing.start;
+        if (!activity.end && obsoleteTimes.indexOf(entry.id) < 0 && sameDay(existing.end, entry.date)) activity.end = existing.end;
+        if (!activity.instructor && existing.instructor) activity.instructor = existing.instructor;
+        if (activity.start && activity.end && Date.parse(activity.end) <= Date.parse(activity.start)) activity.end = '';
+        activity.status = activity.start && activity.end && activity.capacity ? 'aberta' : 'pendente';
+        if (existing.status === 'encerrada' || existing.status === 'cancelada') activity.status = existing.status;
+        // Atividades retiradas de inscrições por decisão administrativa continuam fechadas.
+        if (!activity.start || !activity.end || !activity.capacity) activity.status = 'pendente';
+        activity = SemDomain.validateActivity(activity);
+        if (JSON.stringify(activity) === JSON.stringify(existing)) return;
+        updated.push(entry.id);
+      } else created.push(entry.id);
+      changed.push(activity);
+    });
+    var oldTribute = journal.state.activities.HOMENAGEM_CRIS;
+    if (oldTribute) {
+      var withdrawn = Object.assign({}, oldTribute, {
+        description: 'Retirada da programação final da XXI SEMINFO. Cadastro e histórico preservados.',
+        status: oldTribute.start && oldTribute.end && oldTribute.capacity ? 'cancelada' : 'pendente'
+      });
+      if (JSON.stringify(withdrawn) !== JSON.stringify(oldTribute)) { changed.push(withdrawn); retired.push(oldTribute.id); }
+    }
+    if (changed.length) {
+      commitOperationLocked_(journal, {key: 'ADMIN:PROGRAMA_FINAL:' + Utilities.getUuid(), kind: 'PROGRAM_UPDATE',
+        at: new Date().toISOString(), activities: changed,
+        reason: 'Programação final da XXI SEMINFO, de 26 a 29/10/2026, atualizada pela organização.'});
+      rebuildViewsLocked_(readJournal_());
+    }
+    return {criadas: created, atualizadas: updated, retiradasDaProgramacao: retired};
+  });
 }
 
 /** Não inventa capacidade nem término para palestras com dados incompletos. */
@@ -468,24 +555,67 @@ function menuProgramacaoSeminfo2026() {
 
 /** Atualiza catálogo e Forms de uma instalação existente, preservando inscrições. */
 function atualizarProgramacaoSeminfo2026() {
+  var catalog = sincronizarCatalogoProgramacaoFinalSeminfo2026_();
   prepararFormulariosSeminfo2026();
   var program = carregarProgramacaoSeminfo2026();
+  program.criadas = catalog.criadas;
+  program.atualizadas = catalog.atualizadas;
+  program.retiradasDaProgramacao = catalog.retiradasDaProgramacao;
   var installation = instalarSistema();
-  var titles = atualizarFormularios();
-  return {programacao: program, instalacao: installation, titulos: titles};
+  var titles = atualizarFormularios(true);
+  var descriptions = atualizarDescricoesProgramacaoSeminfo2026_();
+  var issues = (installation.issues || []).slice();
+  try { refreshFormsSafely_(); }
+  catch (error) { recordError_('programacao-final-formularios', '', error); issues.push(safeError_(error)); }
+  return {programacao: program, instalacao: installation, titulos: titles,
+    descricoesAtualizadas: descriptions, pendencias: issues};
 }
 
-/** Sincroniza títulos, arquivos e planilha; conserva respostas e dados operacionais. */
-function atualizarFormularios() {
+/** Conserva os textos da oficina; substitui as linhas antigas de data, local, horário e vagas. */
+function atualizarDescricoesProgramacaoSeminfo2026_() {
+  var state = readState_(), updated = [];
+  var ids = programacaoSeminfo2026_().map(function (entry) { return entry.id; });
+  getFormInventorySources_().forEach(function (source) {
+    var activity = state.activities[source.activityId];
+    if (!activity || ids.indexOf(source.activityId) < 0) return;
+    var form = openFormWithDriveRetry_(source.id), original = form.getDescription();
+    if (source.kind === 'IMPORTACAO_CSP' && form.getTitle() !== activity.title) {
+      form.setTitle(activity.title);
+      DriveApp.getFileById(source.id).setName(activity.title);
+    }
+    var preserved = String(original || '').replace(/\n*XXI SEMINFO — Programação atualizada\n[\s\S]*$/, '')
+      .replace(/^[^\wÀ-ÿ\n]*(?:local|hor[áa]rio(?: de in[íi]cio)?|data|vagas|ministrantes?|palestrante)\s*:.*$/gim, '')
+      .replace(/\n{3,}/g, '\n\n').trim();
+    var entry = programacaoSeminfo2026_().find(function (item) { return item.id === source.activityId; });
+    var start = activity.start ? Utilities.formatDate(new Date(activity.start), 'America/Sao_Paulo', 'HH:mm') : '';
+    var end = activity.end ? Utilities.formatDate(new Date(activity.end), 'America/Sao_Paulo', 'HH:mm') : '';
+    var lines = ['XXI SEMINFO — Programação atualizada', 'Data: ' + entry.date.split('-').reverse().join('/'),
+      'Horário: ' + (start ? start + (end ? ' às ' + end : ' (término a confirmar)') : 'a confirmar'),
+      'Local: ' + (activity.location || 'a confirmar')];
+    if (activity.instructor) lines.push('Ministrante(s): ' + activity.instructor);
+    lines.push('Vagas: ' + (activity.capacity ? activity.capacity + (activity.capacityUnit === 'equipes' ? ' equipes' : '') : 'a confirmar'));
+    var description = (preserved ? preserved + '\n\n' : '') + lines.join('\n');
+    if (description !== original) { form.setDescription(description); updated.push(source.id); }
+  });
+  return updated;
+}
+
+function tituloFormularioDaAtividade_(activity) {
+  var prefix = {oficina: 'OFICINA', palestra: 'PALESTRA'}[activity.type];
+  if (!prefix) return activity.title;
+  return prefix + ' - ' + String(activity.title).replace(/^(?:(?:oficina|palestra)\s*[-–—:]\s*)+/i, '').trim();
+}
+
+/** Sincroniza título visível e arquivo do Form com o prefixo do tipo da atividade. */
+function atualizarFormularios(deferRefresh) {
   requireInstaller_();
   return withLock_(function () {
     var definitions = getRegistrationFormDefinitions_();
     var program = programacaoSeminfo2026_();
-    var renamedIds = ['OFICINA_GAMEMAKER', 'OFICINA_JOGOS_NOITE', 'OFICINA_BLENDER',
-      'OFICINA_OLLAMA', 'OFICINA_SEGURANCA', 'PALESTRA_DANIELE', 'PALESTRA_BIO', 'PALESTRA_JOHNATAN'];
-    var titles = {};
+    var titles = {}, formTitles = {};
     program.forEach(function (entry) {
-      if (renamedIds.indexOf(entry.id) >= 0) titles[entry.id] = entry.title;
+      titles[entry.id] = entry.title;
+      formTitles[entry.id] = tituloFormularioDaAtividade_(entry);
     });
     var entries = definitions.filter(function (entry) { return entry.id && titles[entry.activityId]; })
       .map(function (entry) { return {source: entry, form: openFormWithDriveRetry_(entry.id)}; });
@@ -499,11 +629,11 @@ function atualizarFormularios() {
       journal = readJournal_();
     });
     definitions.forEach(function (entry) {
-      if (titles[entry.activityId]) entry.title = titles[entry.activityId];
+      if (formTitles[entry.activityId]) entry.title = formTitles[entry.activityId];
     });
     setConfig_('FORMULARIOS_INSCRICAO_JSON', JSON.stringify(definitions));
     entries.forEach(function (entry) {
-      var title = titles[entry.source.activityId];
+      var title = formTitles[entry.source.activityId];
       entry.form.setTitle(title);
       DriveApp.getFileById(entry.source.id).setName(title);
     });
@@ -516,9 +646,9 @@ function atualizarFormularios() {
         if (titles[row[0]]) sheet.getRange(index + 2, 5).setValue(titles[row[0]]);
       });
     }
-    refreshFormsLocked_(journal.state);
+    if (deferRefresh !== true) refreshFormsLocked_(journal.state);
     return {formularios: entries.map(function (entry) {
-      return {id: entry.source.id, titulo: titles[entry.source.activityId]};
+      return {id: entry.source.id, titulo: formTitles[entry.source.activityId]};
     }), abasDeRespostas: responseSheets};
   });
 }

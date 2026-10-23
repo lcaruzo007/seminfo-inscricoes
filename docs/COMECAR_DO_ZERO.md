@@ -2,7 +2,7 @@
 
 Esta atualização prepara o reinício completo. A limpeza na conta Google acontece somente quando você executar a função abaixo. Nenhuma limpeza no Google foi executada pela entrega local.
 
-**Se você já fez a limpeza e quer acrescentar palestras e abertura:** atualize os arquivos `.gs` e execute **`atualizarProgramacaoSeminfo2026`**. Ela cadastra os itens faltantes, incorpora o Form da abertura e preserva inscrições e ajustes existentes. As 18 atividades aparecem em `Atividades`; as incompletas ficam pendentes e fechadas.
+**Para aplicar a programação final na instalação existente:** atualize os arquivos `.gs` e execute **`atualizarProgramacaoSeminfo2026`**. Ela atualiza os dados finais, incorpora os Forms novos e preserva inscrições e respostas. Consulte o [roteiro da programação final](PROGRAMACAO_FINAL.md). As atividades incompletas ficam pendentes e fechadas.
 
 1. No **mesmo projeto Apps Script**, substitua o conteúdo dos sete arquivos `.gs` pelos da pasta [`src/`](../src). Mantenha a mesma planilha, projeto e conta instaladora. O manifesto permanece igual.
 2. Salve e execute **`comecarSeminfo2026DoZero`** no editor. Também há a opção **SEMINFO → Começar do zero com os mesmos Forms** após reabrir a planilha.
@@ -33,22 +33,25 @@ Se aparecer **“O formulário não tem nenhum destino de resposta no momento.�
 
 ## Programação e formulários
 
-Os dez links de inscrição já constam em `Config.gs`, associados a atividades diferentes e com o campo `title` preenchido. A fonte histórica da CSP também está configurada em `IMPORTACAO_CSP_JSON` e aparece em **Listar perguntas dos Forms existentes** como `IMPORTACAO_CSP`, sem ser instalada como inscrição individual. Na próxima instalação, o destino de respostas futuras da CSP será alterado para a planilha principal; a guia e as respostas antigas permanecem na planilha anterior. A nova guia recebe o nome **Respostas — Competição Seminfo de Programação — CSP**. `prepararFormulariosSeminfo2026` transfere a lista de inscrições para uma instalação existente, preservando os Forms anteriores e os mapeamentos já usados. O título visível dos Forms de inscrição é aplicado na instalação; as descrições existentes são preservadas. As abas nativas vinculadas também recebem o nome da atividade, como **Respostas — Oficina de Jogos — Ricardo Martins — Tarde**, preservando seu vínculo com o Form.
+Os onze Forms por ID e os dois novos por URL pública constam em `Config.gs`, incluindo o Form de linguagem C. A fonte histórica da CSP também está configurada em `IMPORTACAO_CSP_JSON` e aparece em **Listar perguntas dos Forms existentes** como `IMPORTACAO_CSP`, sem ser instalada como inscrição individual. Na próxima instalação, o destino de respostas futuras da CSP será alterado para a planilha principal; a guia e as respostas antigas permanecem na planilha anterior. A nova guia recebe o nome **Respostas — Competição Seminfo de Programação — CSP**. `prepararFormulariosSeminfo2026` transfere a lista para a instalação existente, preservando os Forms e mapeamentos anteriores. A atualização final aplica `PALESTRA - Nome` e `OFICINA - Nome` ao título e ao arquivo do Form, corrige abas nativas e as linhas de programação nas descrições; os demais textos são conservados.
 
 | Form | Atividade | Vagas | Horário |
 |---|---|---:|---|
-| Abertura — XXI Seminfo | `ABERTURA_2026` | Pendente | Horários pendentes |
-| Jogos — Ricardo Martins — Tarde | `OFICINA_GAMEMAKER` | 30 | 27/10, 13h–17h |
-| Jogos — Ricardo Martins — Noite | `OFICINA_JOGOS_NOITE` | 30 | 27/10, 19h–23h |
-| 3D — Caio H. | `OFICINA_BLENDER` | 30 | 27/10, 13h–17h |
-| Ollama — Darosa | `OFICINA_OLLAMA` | 15 | 27/10, 13h–17h |
-| IA Além do Chat — Rafaela | `OFICINA_IA_ALEM_CHAT` | 30 | 27/10, 13h–17h |
-| Bio | `PALESTRA_BIO` | Pendente | Início e término pendentes |
-| Segurança da Informação — Rafaela | `OFICINA_SEGURANCA` | 30 | 28/10, 13h–17h; confirmar sala 15 |
-| Online — Daniele Tavares | `PALESTRA_DANIELE` | Pendente | 28/10, 19h30; término pendente |
-| Online — Johnatan UFLA | `PALESTRA_JOHNATAN` | Pendente | 29/10, 19h30; término pendente |
+| Abertura — XXI Seminfo | `ABERTURA_2026` | Pendente | 26/10, 13h–17h |
+| Troubleshooting — Ana Carolina Brazão | `NOITE_26` | Pendente | 26/10, 19h; término pendente |
+| GameMaker — Ricardo José Martins — Tarde | `OFICINA_GAMEMAKER` | 30 | 27/10, 13h–17h |
+| GameMaker — Ricardo José Martins — Noite | `OFICINA_JOGOS_NOITE` | 30 | 27/10, 19h–23h |
+| Pipeline de Dados — Tiago Fernandes Moraes | `OFICINA_YASMIN_GABRIEL` | 30 | 27/10, 13h–17h |
+| Blender — Caio Henrique Magalhães | `OFICINA_BLENDER` | 20 | 27/10, 13h–17h |
+| Ollama — Gabriel Madeira | `OFICINA_OLLAMA` | 15 | 27/10, 13h–17h |
+| IA Além do Chat — Rafaela e Felipe | `OFICINA_IA_ALEM_CHAT` | 30 | 27/10, 13h–17h |
+| Introdução à linguagem C | `OFICINA_C` | 40 | 27/10, 13h–17h; Form incluído |
+| ABREU | `PALESTRA_BIO` | Pendente | 27/10, 13h30; término pendente |
+| Segurança — Rafaela e Nycollas | `OFICINA_SEGURANCA` | 30 | 28/10, 13h–17h, Sala 15 |
+| Online — Daniele Nazaré Tavares | `PALESTRA_DANIELE` | Pendente | 28/10, 19h30; término pendente |
+| Online — Johnatan Alves de Oliveira | `PALESTRA_JOHNATAN` | Pendente | 29/10, 19h30; término pendente |
 
-As abas **Programacao** e **Atividades** listam os 18 itens, inclusive abertura, credenciamento, homenagem, coffee break, CSP e encerramento. As seis oficinas com Form e intervalo/capacidade informados ficam aptas à abertura administrativa. Todos os demais itens também são cadastrados: dados desconhecidos ficam vazios e a situação fica **pendente**. A oficina de Yasmin e Gabriel também fica pendente até completar tema e Form. Cadastros existentes preservam seu estado e os ajustes da organização.
+As abas **Programacao** e **Atividades** listam os 18 itens finais, incluindo abertura, credenciamento, coffee break, CSP, encerramento e a nova oficina de C. A homenagem não faz parte da programação final. Pipeline de Dados substitui o cadastro provisório de Yasmin e Gabriel. A CSP termina às 15h30 e o encerramento começa às 15h30. Os dados desconhecidos ficam vazios e a situação fica **pendente** quando início, término ou capacidade ainda não estão completos.
 
 O Form da abertura é `1gD2e10L3Zx4cL56TkEIkpgnaP7uX6Qfo1PnAsGYg5fs`, vinculado somente a `ABERTURA_2026`. Os Forms de palestras e da abertura ficam fechados enquanto seus dados estiverem pendentes. Para ativá-los, use **Cadastrar / atualizar atividade** com início, término e capacidade completos, o mesmo ID e `status: "aberta"`. A programação define a CSP com capacidade de **60 equipes**. Confira esse limite antes de preparar a importação. Não foram inventados horários, capacidades ou links ausentes além da capacidade definida pela organização.
 

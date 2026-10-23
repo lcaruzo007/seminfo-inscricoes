@@ -51,6 +51,37 @@ function submit(state, input) {
   return { state: next, outcome, operation };
 }
 
+test('Programação final altera dois horários em lote e preserva inscrições e decisões originais', () => {
+  let state = catalog(activity('A'), activity('B', {start: '2026-10-19T16:00:00-03:00', end: '2026-10-19T18:00:00-03:00'}));
+  const first = submit(state, request('A')); state = first.state;
+  const second = submit(state, request('B')); state = second.state;
+  const before = JSON.stringify(state);
+  const operation = {key: 'program-final', kind: 'PROGRAM_UPDATE', at: AT, reason: 'Programação final da organização.',
+    activities: [activity('A', {start: '2026-10-19T16:00:00-03:00', end: '2026-10-19T18:00:00-03:00'}), activity('B')]};
+  const next = D.applyOperation(state, operation);
+  assert.equal(JSON.stringify(state), before);
+  for (const registration of Object.values(next.registrations)) {
+    assert.equal(registration.status, 'confirmada');
+    assert.deepEqual(plain(registration.activity), plain(next.activities[registration.activityId]));
+  }
+  assert.equal(D.occupancy(next, 'A'), 1);
+  assert.equal(D.occupancy(next, 'B'), 1);
+  assert.deepEqual(plain(next.operations[first.operation.key]), plain(first.operation));
+  assert.deepEqual(plain(D.applyOperation(next, operation)), plain(next));
+});
+
+test('Programação final com conflito ou capacidade insuficiente recusa o lote completo', () => {
+  let state = catalog(activity('A'), activity('B', {start: '2026-10-19T16:00:00-03:00', end: '2026-10-19T18:00:00-03:00'}));
+  state = submit(state, request('A')).state;
+  state = submit(state, request('A', {cpf: CPF2, email: 'outra@example.org'})).state;
+  state = submit(state, request('B')).state;
+  const before = JSON.stringify(state);
+  const update = activities => ({key: 'bad-program', kind: 'PROGRAM_UPDATE', at: AT, reason: 'Programação final.', activities});
+  assert.throws(() => D.applyOperation(state, update([activity('A', {capacity: 1}), activity('B', {title: 'Novo título'})])), /Capacidade/);
+  assert.throws(() => D.applyOperation(state, update([activity('A', {end: '2026-10-19T17:00:00-03:00'})])), /conflito/);
+  assert.equal(JSON.stringify(state), before);
+});
+
 test('1. Confirma inscrição com vaga e registra CPF como texto', () => {
   const { state, outcome } = submit(catalog(activity('A')), request('A'));
   assert.equal(outcome.code, 'confirmed');

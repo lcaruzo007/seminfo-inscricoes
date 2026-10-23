@@ -2,74 +2,62 @@
   {
     "id": "ABERTURA_2026",
     "date": "2026-10-26",
-    "start": "",
-    "end": "",
+    "start": "13:00",
+    "end": "17:00",
     "title": "Abertura — XXI Seminfo",
     "type": "programacao",
     "instructor": "",
     "location": "Auditório Novo",
     "capacity": null,
-    "pending": "Horário, término, capacidade e detalhes da abertura."
+    "pending": "Capacidade. Bloco com credenciamento, palestra de Douglas e coffee break."
   },
   {
     "id": "CREDENCIAMENTO_2026",
     "date": "2026-10-26",
-    "start": "13:00",
+    "start": "",
     "end": "",
-    "title": "Credenciamento — registrar presença",
+    "title": "Credenciamento e registro de presença",
     "type": "",
     "instructor": "",
     "location": "Auditório Novo",
     "capacity": null,
-    "pending": "Término; atividade de presença, sem Form de inscrição informado."
-  },
-  {
-    "id": "HOMENAGEM_CRIS",
-    "date": "2026-10-26",
-    "start": "13:30",
-    "end": "",
-    "title": "Homenagem Cris — Cesta",
-    "type": "",
-    "instructor": "",
-    "location": "Auditório Novo",
-    "capacity": null,
-    "pending": "Término; sem Form informado."
+    "pending": "Integra o bloco das 13h às 17h; horários individuais e Form não informados."
   },
   {
     "id": "PALESTRA_RENATO",
     "date": "2026-10-26",
-    "start": "13:50",
+    "start": "",
     "end": "",
-    "title": "Palestra — Renato",
+    "title": "Inteligência Artificial e Inovação: muito além de um prompt e um conjunto de dados",
     "type": "palestra",
-    "instructor": "Renato",
+    "instructor": "Prof. Dr. Douglas Donizeti de Castilho Braz",
     "location": "Auditório Novo",
     "capacity": null,
-    "pending": "Término, capacidade e Form."
+    "pending": "Integra o bloco das 13h às 17h; horários individuais, capacidade e Form não informados."
   },
   {
     "id": "COFFEE_BREAK",
     "date": "2026-10-26",
-    "start": "15:00",
+    "start": "",
     "end": "",
     "title": "Coffee break",
     "type": "",
     "instructor": "",
     "location": "Auditório Novo",
     "capacity": null,
-    "pending": "Término; sem Form informado."
+    "pending": "Integra o bloco das 13h às 17h; horários individuais e Form não informados."
   },
   {
     "id": "NOITE_26",
     "date": "2026-10-26",
     "start": "19:00",
-    "end": "23:00",
-    "title": "Palestra / Oficina online — a confirmar",
-    "type": "",
-    "instructor": "",
-    "location": "",
+    "end": "",
+    "title": "Troubleshooting e dados no mundo real",
+    "type": "palestra",
+    "instructor": "Ana Carolina Brazão",
+    "location": "Online — Google Meet",
     "capacity": null,
-    "pending": "Atividade, ministrante, local, capacidade e Form."
+    "pending": "Término e capacidade."
   },
   {
     "id": "OFICINA_GAMEMAKER",
@@ -78,7 +66,7 @@
     "end": "17:00",
     "title": "Desenvolvimento de Jogos 2D com GameMaker — Tarde",
     "type": "oficina",
-    "instructor": "Ricardo Martins",
+    "instructor": "Ricardo José Martins",
     "location": "Sala 14",
     "capacity": 30,
     "pending": ""
@@ -88,12 +76,12 @@
     "date": "2026-10-27",
     "start": "13:00",
     "end": "17:00",
-    "title": "Oficina — Yasmin e Gabriel",
+    "title": "Pipeline de Dados em Tempo Real: Do Zero ao Dashboard",
     "type": "oficina",
-    "instructor": "Yasmin e Gabriel",
+    "instructor": "Tiago Fernandes Moraes",
     "location": "Sala 16",
     "capacity": 30,
-    "pending": "Tema e Form."
+    "pending": ""
   },
   {
     "id": "OFICINA_BLENDER",
@@ -102,9 +90,9 @@
     "end": "17:00",
     "title": "Introdução ao 3D com Blender",
     "type": "oficina",
-    "instructor": "Caio H.",
+    "instructor": "Caio Henrique Magalhães",
     "location": "Sala 15",
-    "capacity": 30,
+    "capacity": 20,
     "pending": ""
   },
   {
@@ -114,8 +102,8 @@
     "end": "17:00",
     "title": "Rodando Inteligência Artificial no seu PC com Ollama",
     "type": "oficina",
-    "instructor": "Darosa",
-    "location": "Sala 5 (redes)",
+    "instructor": "Gabriel Madeira",
+    "location": "Sala 5 — Redes",
     "capacity": 15,
     "pending": ""
   },
@@ -124,11 +112,23 @@
     "date": "2026-10-27",
     "start": "13:00",
     "end": "17:00",
-    "title": "Oficina IA Além do Chat",
+    "title": "IA Além do Chat: Guia Prático para Geração de Imagens e Vídeos com o Gemini",
     "type": "oficina",
-    "instructor": "Rafaela",
+    "instructor": "Rafaela Alves Magalhães e Felipe Antony Baquião Avelar",
     "location": "Sala 13",
     "capacity": 30,
+    "pending": ""
+  },
+  {
+    "id": "OFICINA_C",
+    "date": "2026-10-27",
+    "start": "13:00",
+    "end": "17:00",
+    "title": "Introdução à linguagem C",
+    "type": "oficina",
+    "instructor": "Matheus Matias dos Santos, Matheus Henrique Dias e Felipe Augusto de Melo Lozano",
+    "location": "Cesário Coimbra — Sala 09",
+    "capacity": 40,
     "pending": ""
   },
   {
@@ -138,7 +138,7 @@
     "end": "23:00",
     "title": "Desenvolvimento de Jogos 2D com GameMaker — Noite",
     "type": "oficina",
-    "instructor": "Ricardo Martins",
+    "instructor": "Ricardo José Martins",
     "location": "Sala 14",
     "capacity": 30,
     "pending": ""
@@ -146,14 +146,14 @@
   {
     "id": "PALESTRA_BIO",
     "date": "2026-10-27",
-    "start": "",
+    "start": "13:30",
     "end": "",
     "title": "Acervo Brasileiro de Referências sobre Eugenia (ABREU): o uso de ferramentas Google na construção de uma plataforma de divulgação científica",
     "type": "palestra",
     "instructor": "",
     "location": "Auditório H",
     "capacity": null,
-    "pending": "Início, término, capacidade e ministrante."
+    "pending": "Término, capacidade e palestrante."
   },
   {
     "id": "OFICINA_SEGURANCA",
@@ -162,10 +162,10 @@
     "end": "17:00",
     "title": "Segurança da Informação na Prática: Aprenda, Identifique e Proteja-se",
     "type": "oficina",
-    "instructor": "Rafaela",
-    "location": "Sala 15 — a confirmar",
+    "instructor": "Rafaela Alves Magalhães e Nycollas Icrad Luz Machado",
+    "location": "Sala 15",
     "capacity": 30,
-    "pending": "Confirmar sala 15."
+    "pending": ""
   },
   {
     "id": "PALESTRA_DANIELE",
@@ -174,8 +174,8 @@
     "end": "",
     "title": "Computação Quântica: Entendendo o contexto para inovar no futuro",
     "type": "palestra",
-    "instructor": "Daniele Tavares",
-    "location": "Online",
+    "instructor": "Daniele Nazaré Tavares",
+    "location": "Online — Google Meet",
     "capacity": null,
     "pending": "Término e capacidade."
   },
@@ -183,7 +183,7 @@
     "id": "CSP_2026",
     "date": "2026-10-29",
     "start": "13:00",
-    "end": "16:00",
+    "end": "15:30",
     "title": "Competição Seminfo de Programação — CSP",
     "type": "competicao",
     "instructor": "",
@@ -194,7 +194,7 @@
   {
     "id": "ENCERRAMENTO_2026",
     "date": "2026-10-29",
-    "start": "16:00",
+    "start": "15:30",
     "end": "17:00",
     "title": "Encerramento",
     "type": "",
@@ -210,8 +210,8 @@
     "end": "",
     "title": "Ainda precisamos aprender a programar? O futuro da Engenharia de Software na era da Inteligência Artificial",
     "type": "palestra",
-    "instructor": "Johnatan UFLA",
-    "location": "Online",
+    "instructor": "Prof. Dr. Johnatan Alves de Oliveira",
+    "location": "Online — Google Meet",
     "capacity": null,
     "pending": "Término e capacidade."
   }

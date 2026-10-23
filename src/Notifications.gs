@@ -93,6 +93,11 @@ function currentCapacityEvents_(operations) {
     if (operation.kind === 'CATALOG' && operation.activity) {
       touch(operation.activity.id);
       activities[operation.activity.id] = operation.activity;
+    } else if (operation.kind === 'PROGRAM_UPDATE') {
+      (operation.activities || []).forEach(function (activity) {
+        touch(activity.id);
+        activities[activity.id] = activity;
+      });
     } else if (operation.kind === 'REQUEST' && operation.outcome) {
       (operation.outcome.changes || []).forEach(function (change) {
         if (change.type === 'CANCEL') {

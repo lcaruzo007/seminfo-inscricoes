@@ -367,6 +367,24 @@ var SemDomain = (function () {
       }
       next.activities[activity.id] = activity;
       if (next.deletedActivities) delete next.deletedActivities[activity.id];
+    } else if (operation.kind === 'PROGRAM_UPDATE') {
+      text(operation.reason, 'Justificativa da atualização da programação', true);
+      var updatedActivities = validateCatalog(operation.activities);
+      updatedActivities.forEach(function (activity) {
+        var current = next.activities[activity.id];
+        if (activity.capacity < occupancy(next, activity.id)) throw new Error('Capacidade não pode ser menor que a ocupação confirmada de ' + activity.id + '.');
+        if (current && occupancy(next, activity.id) && (current.capacityUnit || 'pessoas') !== (activity.capacityUnit || 'pessoas')) {
+          throw new Error('Não altere a unidade de capacidade com inscrições confirmadas.');
+        }
+        next.activities[activity.id] = activity;
+      });
+      // O lote atualiza todos os horários antes de validar conflitos. O livro conserva os snapshots anteriores.
+      Object.keys(next.registrations).forEach(function (id) {
+        var registration = next.registrations[id];
+        if (registration.status === CONFIRMED && updatedActivities.some(function (activity) { return activity.id === registration.activityId; })) {
+          registration.activity = copy(next.activities[registration.activityId]);
+        }
+      });
     } else if (operation.kind === 'DELETE_ACTIVITY') {
       var activityId = identifier(operation.activityId, 'ID da atividade');
       if (!owns(next.activities, activityId)) throw new Error('Atividade inexistente.');
@@ -394,13 +412,15 @@ var SemDomain = (function () {
   }
 
   function validateTeamRegistration(input) {
-    var team = copy(input);
+    var team = copy(input), seen = {};
     if (team.administrativeIncomplete === true) {
       team.teamName = text(team.teamName, 'Equipe', true);
-      if (!Array.isArray(team.members) || team.members.length > 3) throw new Error('Integrantes incompat?veis.');
+      if (!Array.isArray(team.members) || team.members.length > 3) throw new Error('Integrantes incompatíveis.');
       team.members.forEach(function (member, index) {
         member.name = text(member.name, 'Nome', false);
         member.cpf = member.cpf ? normalizeCpf(member.cpf) : '';
+        if (member.cpf && owns(seen, member.cpf)) throw new Error('CPF repetido dentro da equipe.');
+        if (member.cpf) seen[member.cpf] = true;
         member.role = index === 0 ? 'coach' : 'integrante';
       });
       team.cpf = team.members[0] && team.members[0].cpf || '';
@@ -410,7 +430,6 @@ var SemDomain = (function () {
     team.teamName = text(team.teamName, 'Nome da equipe', true);
     if (team.teamName.length > 200) throw new Error('Nome da equipe excede 200 caracteres.');
     if (!Array.isArray(team.members) || team.members.length < 1 || team.members.length > 3) throw new Error('A equipe deve ter de um a três integrantes.');
-    var seen = {};
     team.members = team.members.map(function (member, index) {
       var parsed = copy(member);
       parsed.name = text(parsed.name, 'Nome do integrante ' + (index + 1), true);
@@ -425,18 +444,22 @@ var SemDomain = (function () {
     return team;
   }
 
-  function decideTeam(state, request) {
+  function decideTeam(state, request, options) {
     var team, activity;
+    var incomplete = options && options.administrativeIncomplete === true;
     try {
       if (!request || request.kind !== 'INSCRICAO_EQUIPE') throw new Error('Tipo de solicitação de equipe inválido.');
       if (request.invalidAnswer) throw new Error((request.importErrors || []).join('; ') || 'Dados da equipe inválidos.');
       identifier(request.key, 'Chave da solicitação');
       var activityId = identifier(request.activityId, 'Atividade');
       var submittedAt = instant(request.submittedAt, 'Data da solicitação');
-      team = validateTeamRegistration({id: request.key + ':equipe', cpf: request.members[0] && request.members[0].cpf,
+      var registration = {id: request.key + ':equipe', cpf: request.members[0] && request.members[0].cpf,
         entityType: 'EQUIPE', teamName: request.teamName, teamType: request.teamType || '', members: request.members,
-        activityId: activityId, status: CONFIRMED, createdAt: submittedAt});
-      if (request.declaredSize && request.declaredSize !== team.members.length) throw new Error('Quantidade declarada diferente do número de integrantes identificados.');
+        activityId: activityId, status: CONFIRMED, createdAt: submittedAt};
+      // A recuperação administrativa aceita dados ausentes, mantendo as regras de vagas, duplicidade e conflitos.
+      if (incomplete) registration.administrativeIncomplete = true;
+      team = validateTeamRegistration(registration);
+      if (!incomplete && request.declaredSize && request.declaredSize !== team.members.length) throw new Error('Quantidade declarada diferente do número de integrantes identificados.');
       activity = state.activities[activityId];
       if (!activity) return result('missing_activity', 'Atividade de destino não cadastrada.');
       if (activity.capacityUnit !== 'equipes') throw new Error('Configure a capacidade da atividade em equipes.');
@@ -449,7 +472,9 @@ var SemDomain = (function () {
         previous.teamName.trim().toLowerCase() === team.teamName.trim().toLowerCase();
     });
     var active = [];
-    team.members.forEach(function (member) { active = active.concat(confirmedFor(state, member.cpf)); });
+    team.members.forEach(function (member) {
+      if (member.cpf) active = active.concat(confirmedFor(state, member.cpf));
+    });
     if (sameName || active.some(function (registration) { return registration.activityId === team.activityId; })) return result('duplicate', 'Equipe ou integrante já possui inscrição confirmada nesta atividade.', extras);
     if (occupancy(state, team.activityId) >= activity.capacity) return result('full', 'A capacidade de equipes foi atingida. Nenhuma vaga foi ocupada por esta solicitação.', extras);
     if (active.some(function (registration) { return overlaps(activity, registration.activity || state.activities[registration.activityId]); })) return result('conflict', 'Um ou mais integrantes têm conflito de horário. A equipe requer conferência da organização.', extras);

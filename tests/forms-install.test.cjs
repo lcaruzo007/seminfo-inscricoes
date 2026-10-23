@@ -210,7 +210,8 @@ function environment(defaultMode = 'VERIFIED') {
   }
   // Os IDs reais configurados pelo CA não pertencem aos serviços simulados.
   context.SEMINFO_CONFIG = Object.freeze({ ...context.SEMINFO_CONFIG,
-    ID_PLANILHA: '', ID_FORM_INSCRICAO: '', ID_FORM_CANCELAMENTO: '', FORMULARIOS_INSCRICAO_JSON: '[]', IMPORTACAO_CSP_JSON: '' });
+    ID_PLANILHA: '', ID_FORM_INSCRICAO: '', ID_FORM_CANCELAMENTO: '', FORMULARIOS_INSCRICAO_JSON: '[]',
+    FORMULARIOS_PUBLICOS_SEMINFO_JSON: '[]', IMPORTACAO_CSP_JSON: '' });
   // A fila é testada separadamente. Estas fronteiras não enviam e-mails reais.
   context.ensureNotificationSheet_ = () => context.ensureTable_('FilaEmails', ['ID']);
   context.syncNotificationQueueLocked_ = () => { stats.queueSyncs++; };
@@ -1417,6 +1418,97 @@ test('Integrante repetido, nome de equipe repetido e CPF duplicado na equipe nã
   assert.equal(report.ocupacao, 1); assert.equal(report.pendentesConferencia, 1);
 });
 
+test('Equipe incompleta com CPF já inscrito não interrompe a importação das novas equipes', () => {
+  const e = teamCspEnvironment();
+  e.teamResponse('Já importada', ['Coach - 52998224725']);
+  e.context.prepararImportacaoCsp(); e.context.importarInscricoesAnterioresCsp();
+  const duplicate = e.teamResponse('Repetida com pendência', ['Outro coach - 11144477735', 'Integrante - 52998224725', 'Pessoa sem CPF']);
+  e.teamResponse('Nova equipe', ['Coach novo - 01234567890', 'Pessoa sem CPF']);
+
+  const preview = e.context.prepararImportacaoCsp();
+  assert.equal(preview.jaProcessadas, 1);
+  assert.equal(preview.resultadosPrevistos.duplicate, 1);
+  assert.equal(preview.resultadosPrevistos.confirmed, 1);
+  const report = e.context.importarInscricoesAnterioresCsp();
+  assert.equal(report.resultados.duplicate, 1);
+  assert.equal(report.resultados.confirmed, 1);
+  assert.equal(report.ocupacao, 2);
+  assert.equal(report.restantes, 0);
+  assert.deepEqual(e.context.tableRows_('Equipes').map(row => row.EQUIPE), ['Já importada', 'Nova equipe']);
+  assert.equal(e.context.tableRows_('IntegrantesEquipes').length, 3);
+  assert.equal(e.context.tableRows_('Recuperacao_CSP').find(row => row.EQUIPE === 'Repetida com pendência').SITUACAO, 'duplicate');
+  assert.equal(e.context.readJournal_().byKey[e.form.id + ':' + duplicate.getId()].outcome.code, 'duplicate');
+  const operationCount = e.context.readJournal_().operations.length;
+  assert.equal(e.context.importarInscricoesAnterioresCsp().processadasNesteLote, 0);
+  assert.equal(e.context.readJournal_().operations.length, operationCount);
+  assert.equal(e.context.tableRows_('Equipes').length, 2);
+});
+
+test('CPF repetido na equipe com outro integrante incompleto fica pendente e permite importar a próxima', () => {
+  const e = teamCspEnvironment();
+  e.teamResponse('Repetida internamente', ['Coach - 52998224725', 'Integrante - 52998224725', 'Pessoa sem CPF']);
+  e.teamResponse('Nova equipe', ['Outro coach - 11144477735']);
+  const preview = e.context.prepararImportacaoCsp();
+  assert.equal(preview.resultadosPrevistos.invalid, 1);
+  assert.equal(preview.resultadosPrevistos.confirmed, 1);
+  const report = e.context.importarInscricoesAnterioresCsp();
+  assert.equal(report.pendentesConferencia, 1);
+  assert.match(report.equipesPendentes[0].motivo, /CPF repetido dentro da equipe/);
+  assert.equal(report.restantes, 0);
+  assert.equal(report.ocupacao, 1);
+  assert.equal(e.context.tableRows_('Equipes')[0].EQUIPE, 'Nova equipe');
+  assert.equal(e.context.tableRows_('IntegrantesEquipes').length, 1);
+});
+
+test('Nome repetido de equipe incompleta é recusado mesmo quando nenhum CPF é conhecido', () => {
+  const e = teamCspEnvironment();
+  e.teamResponse('Alpha', ['Primeira pessoa sem CPF']);
+  e.teamResponse(' alpha ', ['Segunda pessoa sem CPF']);
+  e.teamResponse('Beta', ['Terceira pessoa sem CPF']);
+  const preview = e.context.prepararImportacaoCsp();
+  assert.equal(preview.resultadosPrevistos.confirmed, 2);
+  assert.equal(preview.resultadosPrevistos.duplicate, 1);
+  const report = e.context.importarInscricoesAnterioresCsp();
+  assert.equal(report.ocupacao, 2);
+  assert.equal(report.resultados.duplicate, 1);
+  assert.equal(e.context.tableRows_('Equipes').length, 2);
+  assert.equal(e.context.tableRows_('IntegrantesEquipes').length, 2);
+});
+
+test('Equipe incompleta respeita conflito de CPF conhecido e mantém as inscrições anteriores', () => {
+  const e = teamCspEnvironment();
+  e.context.salvarAtividade(e.activity('B')); e.context.abrirInscricoes();
+  const registered = e.response('INSCRICAO', {answers: {CPF: '11144477735', ACTIVITY: '[B] Outra atividade'}});
+  e.context.processFormResponse_('INSCRICAO', registered.form, registered.response);
+  e.teamResponse('Incompleta em conflito', ['Coach - 11144477735', 'Pessoa sem CPF']);
+  e.teamResponse('Nova equipe', ['Outro coach - 52998224725']);
+  const preview = e.context.prepararImportacaoCsp();
+  assert.equal(preview.resultadosPrevistos.conflict, 1);
+  assert.equal(preview.resultadosPrevistos.confirmed, 1);
+  const report = e.context.importarInscricoesAnterioresCsp();
+  assert.equal(report.resultados.conflict, 1);
+  assert.equal(report.ocupacao, 1);
+  assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'B'), 1);
+  assert.equal(e.context.tableRows_('Equipes')[0].EQUIPE, 'Nova equipe');
+});
+
+test('Backup de equipe incompleta com CPF já importado não bloqueia novas respostas do Form', () => {
+  const e = teamCspEnvironment();
+  e.teamResponse('Já importada', ['Coach - 52998224725']);
+  e.context.prepararImportacaoCsp(); e.context.importarInscricoesAnterioresCsp();
+  const rows = savedCspMemberRows(e);
+  rows[2][2] = '1234567890';
+  e.teamResponse('Nova equipe', ['Coach novo - 01234567890']);
+  const preview = e.context.prepararRecuperacaoEquipesCsp(rows);
+  assert.equal(preview.resultadosPrevistos.duplicate, 1);
+  assert.equal(preview.resultadosPrevistos.confirmed, 1);
+  const report = e.context.importarInscricoesAnterioresCsp();
+  assert.equal(report.resultados.duplicate, 1);
+  assert.equal(report.ocupacao, 2);
+  assert.equal(e.context.tableRows_('Equipes').length, 2);
+  assert.equal(e.context.tableRows_('IntegrantesEquipes').length, 2);
+});
+
 test('Equipes com quantidade divergente e textos ambiguos sao confirmadas administrativamente', () => {
   const e = teamCspEnvironment();
   e.teamResponse('Incompleta', ['Pessoa Exemplo - 52998224725'], 3);
@@ -1512,14 +1604,28 @@ test('Programação carrega horários/capacidades conhecidos, separa turnos e ma
   assert.equal(state.activities.PALESTRA_DANIELE.start, '2026-10-28T22:30:00.000Z');
   assert.equal(state.activities.PALESTRA_DANIELE.end, '');
   assert.equal(state.activities.PALESTRA_DANIELE.capacity, null);
-  assert.equal(state.activities.PALESTRA_BIO.start, '');
+  assert.equal(state.activities.PALESTRA_BIO.start, '2026-10-27T16:30:00.000Z');
   assert.match(state.activities.PALESTRA_BIO.description, /2026-10-27/);
   assert.equal(state.activities.CSP_2026.capacityUnit, 'equipes');
   assert.equal(state.activities.CSP_2026.capacity, 60);
   assert.equal(state.activities.CSP_2026.status, 'aberta');
   assert.equal(state.activities.CSP_2026.type, 'competicao');
   assert.equal(state.activities.ENCERRAMENTO_2026.type, 'programacao');
-  assert.equal(state.activities.OFICINA_YASMIN_GABRIEL.status, 'pendente');
+  assert.equal(state.activities.OFICINA_YASMIN_GABRIEL.status, 'aberta');
+  assert.equal(state.activities.OFICINA_YASMIN_GABRIEL.title, 'Pipeline de Dados em Tempo Real: Do Zero ao Dashboard');
+  assert.equal(state.activities.OFICINA_YASMIN_GABRIEL.instructor, 'Tiago Fernandes Moraes');
+  assert.equal(state.activities.OFICINA_BLENDER.capacity, 20);
+  assert.equal(state.activities.OFICINA_BLENDER.instructor, 'Caio Henrique Magalhães');
+  assert.equal(state.activities.OFICINA_OLLAMA.instructor, 'Gabriel Madeira');
+  assert.equal(state.activities.OFICINA_C.capacity, 40);
+  assert.equal(state.activities.OFICINA_C.end, '2026-10-27T20:00:00.000Z');
+  assert.equal(state.activities.CSP_2026.end, '2026-10-29T18:30:00.000Z');
+  assert.equal(state.activities.ENCERRAMENTO_2026.start, '2026-10-29T18:30:00.000Z');
+  assert.equal(state.activities.PALESTRA_RENATO.instructor, 'Prof. Dr. Douglas Donizeti de Castilho Braz');
+  assert.equal(state.activities.NOITE_26.instructor, 'Ana Carolina Brazão');
+  assert.equal(state.activities.NOITE_26.start, '2026-10-26T22:00:00.000Z');
+  assert.equal(state.activities.NOITE_26.end, '');
+  assert.equal(state.activities.HOMENAGEM_CRIS, undefined);
   assert.equal(state.activities.ABERTURA_2026.status, 'pendente');
   assert.equal(e.context.tableRows_('Atividades').length, 18);
   assert.equal(e.context.tableRows_('Programacao').length, 18);
@@ -1541,6 +1647,144 @@ test('Atividade excluída sai das opções e da reconstrução; Form fixo contin
   assert.equal(e.context.getRegistrationFormDefinitions_()[0].id, entry.form.id);
   e.context.salvarAtividade(e.activity());
   assert.equal(entry.form.accepting, true, 'recadastrar restaura atividade');
+});
+
+test('Programação final migra CSP já importada, atualiza snapshots e conserva dados de equipes', () => {
+  const e = teamCspEnvironment(60);
+  e.form.description = 'Texto da competição.\nHorário: 13h às 16h';
+  e.context.salvarAtividade(e.activity('CSP_2026', {capacity: 60, capacityUnit: 'equipes',
+    start: '2026-10-29T13:00:00-03:00', end: '2026-10-29T16:00:00-03:00'}));
+  const response = e.teamResponse('Equipe preservada', ['Coach - 52998224725', 'Integrante sem CPF']);
+  e.context.prepararImportacaoCsp(); e.context.importarInscricoesAnterioresCsp();
+  const key = e.form.id + ':' + response.getId(), original = JSON.stringify(e.context.readJournal_().byKey[key]);
+  const members = JSON.stringify(e.context.tableRows_('IntegrantesEquipes'));
+  const result = e.context.sincronizarCatalogoProgramacaoFinalSeminfo2026_();
+  assert.ok(result.atualizadas.includes('CSP_2026'));
+  const journal = e.context.readJournal_(), team = journal.state.registrations[key + ':equipe'];
+  assert.equal(team.activity.end, '2026-10-29T18:30:00.000Z');
+  assert.equal(journal.state.activities.CSP_2026.end, team.activity.end);
+  assert.equal(e.context.SemDomain.occupancy(journal.state, 'CSP_2026'), 1);
+  assert.equal(JSON.stringify(journal.byKey[key]), original);
+  assert.equal(JSON.stringify(e.context.tableRows_('IntegrantesEquipes')), members);
+  e.context.atualizarDescricoesProgramacaoSeminfo2026_();
+  assert.match(e.form.description, /Texto da competição/);
+  assert.match(e.form.description, /Vagas: 60 equipes/);
+  assert.doesNotMatch(e.form.description, /13h às 16h/);
+  const count = journal.operations.length;
+  e.context.sincronizarCatalogoProgramacaoFinalSeminfo2026_();
+  assert.equal(e.context.readJournal_().operations.length, count);
+});
+
+test('Programação final recusa Blender com mais de 20 inscritos antes de gravar qualquer mudança', () => {
+  const e = environment(); e.installed();
+  const entries = e.context.programacaoSeminfo2026_();
+  const blender = e.context.atividadeDaProgramacao_(entries.find(entry => entry.id === 'OFICINA_BLENDER'));
+  e.context.salvarAtividade({...blender, capacity: 30});
+  e.context.abrirInscricoes();
+  function cpfFor(number) {
+    const digits = String(200000000 + number).split('').map(Number);
+    for (let length = 9; length <= 10; length++) {
+      const remainder = digits.reduce((sum, digit, index) => sum + digit * (length + 1 - index), 0) * 10 % 11;
+      digits.push(remainder === 10 ? 0 : remainder);
+    }
+    return digits.join('');
+  }
+  for (let i = 0; i < 21; i++) {
+    const input = e.response('INSCRICAO', {email: 'pessoa' + i + '@example.org', answers: {CPF: cpfFor(i), ACTIVITY: '[OFICINA_BLENDER] Blender'}});
+    assert.equal(e.context.processFormResponse_('INSCRICAO', input.form, input.response).code, 'confirmed');
+  }
+  const before = JSON.stringify(e.context.readState_()), count = e.context.readJournal_().operations.length;
+  assert.throws(() => e.context.sincronizarCatalogoProgramacaoFinalSeminfo2026_(), /Capacidade.*OFICINA_BLENDER/);
+  assert.equal(JSON.stringify(e.context.readState_()), before);
+  assert.equal(e.context.readJournal_().operations.length, count);
+});
+
+test('Programação final retira homenagem, atualiza placeholders e mantém fechamentos administrativos', () => {
+  const e = environment(); e.installed();
+  e.context.salvarAtividade(e.activity('HOMENAGEM_CRIS', {status: 'pendente', capacity: null, start: '', end: ''}));
+  e.context.salvarAtividade(e.activity('OFICINA_YASMIN_GABRIEL', {status: 'pendente'}));
+  e.context.salvarAtividade(e.activity('NOITE_26', {status: 'pendente', capacity: null,
+    start: '2026-10-26T19:00:00-03:00', end: '2026-10-26T23:00:00-03:00'}));
+  const game = e.context.atividadeDaProgramacao_(e.context.programacaoSeminfo2026_().find(entry => entry.id === 'OFICINA_GAMEMAKER'));
+  e.context.salvarAtividade({...game, status: 'encerrada'});
+  const result = e.context.sincronizarCatalogoProgramacaoFinalSeminfo2026_();
+  const state = e.context.readState_();
+  assert.ok(result.retiradasDaProgramacao.includes('HOMENAGEM_CRIS'));
+  assert.equal(state.activities.OFICINA_YASMIN_GABRIEL.status, 'aberta');
+  assert.equal(state.activities.NOITE_26.end, '');
+  assert.equal(state.activities.OFICINA_GAMEMAKER.status, 'encerrada');
+  assert.match(state.activities.HOMENAGEM_CRIS.description, /Retirada da programação final/);
+  e.context.carregarProgramacaoSeminfo2026();
+  assert.ok(e.context.tableRows_('Programacao').every(row => row.ID !== 'HOMENAGEM_CRIS'));
+});
+
+test('Atualização incorpora os dois Forms públicos, preserva perguntas/respostas e corrige descrições antigas', () => {
+  const e = environment(); e.begin();
+  const pipeline = e.manualRegistration('OFICINA_YASMIN_GABRIEL', {title: 'Pipeline de Dados em Tempo Real: Do Zero ao Dashboard'});
+  const lecture = e.manualRegistration('NOITE_26', {title: 'Troubleshooting e Dados no Mundo Real'});
+  pipeline.form.getPublishedUrl = () => 'https://docs.google.com/forms/d/e/PUBLIC_PIPELINE/viewform';
+  lecture.form.getPublishedUrl = () => 'https://docs.google.com/forms/d/e/PUBLIC_NOITE/viewform';
+  pipeline.form.description = 'Descrição prática da oficina.\n👥 Vagas: 99 participantes\n📍 Local: Sala antiga\nInformações de acessibilidade.';
+  lecture.form.description = 'Descrição da palestra.\n🕓 Horário: 19h30\nAvisos de participação.';
+  pipeline.form.responses.push({id: 'resposta-historica'});
+  const questions = pipeline.form.items.map(item => item.id), created = e.stats.formsCreated;
+  const publicForms = [pipeline, lecture].map(entry => ({activityId: entry.definition.activityId,
+    title: entry.form.title, url: entry.form.getPublishedUrl(), items: entry.definition.items}));
+  e.context.setConfig_('FORMULARIOS_PUBLICOS_SEMINFO_JSON', JSON.stringify(publicForms));
+  const first = e.context.atualizarProgramacaoSeminfo2026();
+  assert.equal(first.programacao.totalCadastradas, 18);
+  assert.equal(pipeline.form.title, 'OFICINA - Pipeline de Dados em Tempo Real: Do Zero ao Dashboard');
+  assert.equal(pipeline.form.documentTitle, pipeline.form.title);
+  assert.equal(lecture.form.title, 'PALESTRA - Troubleshooting e dados no mundo real');
+  assert.equal(lecture.form.documentTitle, lecture.form.title);
+  assert.equal(e.stats.formsCreated, created);
+  assert.deepEqual(pipeline.form.items.map(item => item.id), questions);
+  assert.equal(pipeline.form.responses.length, 1);
+  assert.equal(e.context.getRegistrationFormDefinitions_().filter(source => [pipeline.form.id, lecture.form.id].includes(source.id)).length, 2);
+  assert.match(pipeline.form.description, /Descrição prática da oficina/);
+  assert.match(pipeline.form.description, /Informações de acessibilidade/);
+  assert.match(pipeline.form.description, /Vagas: 30/);
+  assert.match(pipeline.form.description, /Local: Sala 16/);
+  assert.doesNotMatch(pipeline.form.description, /99 participantes|Sala antiga/);
+  assert.doesNotMatch(lecture.form.description, /19h30/);
+  assert.match(lecture.form.description, /Ana Carolina Brazão/);
+  const before = e.context.readJournal_().operations.length, description = pipeline.form.description;
+  const second = e.context.atualizarProgramacaoSeminfo2026();
+  assert.equal(e.context.readJournal_().operations.length, before);
+  assert.equal(pipeline.form.description, description);
+  assert.equal(second.descricoesAtualizadas.length, 0);
+});
+
+test('Busca de Form público no Drive confere a URL e não vincula um homônimo', () => {
+  const e = environment(); e.installed();
+  const wrong = e.manualRegistration('OUTRA', {title: 'Mesmo título'});
+  const right = e.manualRegistration('NOITE_26', {title: 'Mesmo título'});
+  wrong.form.getPublishedUrl = () => 'https://docs.google.com/forms/d/e/PUBLIC_ERRADO/viewform';
+  right.form.getPublishedUrl = () => 'https://docs.google.com/forms/d/e/PUBLIC_CERTO/viewform';
+  e.context.FormApp.openByUrl = () => { throw new Error('URL pública não aceita para edição.'); };
+  const definition = {title: 'Mesmo título', activityId: 'NOITE_26', url: right.form.getPublishedUrl()};
+  const found = e.context.resolverFormularioPublicoSeminfo_(definition, []);
+  assert.equal(found.getId(), right.form.id);
+  assert.notEqual(found.getId(), wrong.form.id);
+  assert.throws(() => e.context.resolverFormularioPublicoSeminfo_({...definition, url: 'https://docs.google.com/forms/d/e/NAO_EXISTE/viewform'}, []), /ID de edição/);
+});
+
+test('Novo Form sem e-mail verificado recebe os dados finais e permanece fechado com pendência explícita', () => {
+  const e = environment('RESPONDER_INPUT'); e.installed();
+  const pipeline = e.manualRegistration('OFICINA_YASMIN_GABRIEL', {title: 'Pipeline de Dados em Tempo Real: Do Zero ao Dashboard'});
+  pipeline.form.getPublishedUrl = () => 'https://docs.google.com/forms/d/e/PUBLIC_PIPELINE/viewform';
+  pipeline.form.description = 'Descrição original.\nLocal: Sala antiga';
+  e.context.setConfig_('FORMULARIOS_PUBLICOS_SEMINFO_JSON', JSON.stringify([{
+    activityId: pipeline.definition.activityId, title: pipeline.form.title,
+    url: pipeline.form.getPublishedUrl(), items: pipeline.definition.items
+  }]));
+  const result = e.context.atualizarProgramacaoSeminfo2026();
+  assert.equal(result.programacao.totalCadastradas, 18);
+  assert.ok(result.pendencias.length);
+  assert.equal(pipeline.form.accepting, false);
+  assert.match(pipeline.form.description, /Local: Sala 16/);
+  assert.equal(e.context.readState_().activities.OFICINA_YASMIN_GABRIEL.instructor, 'Tiago Fernandes Moraes');
+  assert.equal(e.properties.has('SEMINFO_FORM_REFRESH_PENDING'), false);
 });
 
 test('Exclusão com inscrição é recusada sem perder ocupação nem histórico', () => {
@@ -1910,7 +2154,13 @@ test('Atualização da programação inclui Form da abertura e conserva inscriç
   const result = e.context.atualizarProgramacaoSeminfo2026();
   assert.equal(result.programacao.totalCadastradas, 18);
   const title = 'Computação Quântica: Entendendo o contexto para inovar no futuro';
-  assert.deepEqual({...e.context.readState_().activities.PALESTRA_DANIELE}, {...before, title});
+  const updated = e.context.readState_().activities.PALESTRA_DANIELE;
+  assert.equal(updated.title, title);
+  assert.equal(updated.instructor, 'Daniele Nazaré Tavares');
+  assert.equal(updated.start, '2026-10-28T22:30:00.000Z');
+  assert.equal(updated.end, '', 'um término de outro dia não é reutilizado');
+  assert.equal(updated.capacity, before.capacity, 'capacidade preenchida administrativamente é conservada quando não há substituta');
+  assert.equal(updated.status, 'pendente');
   const row = e.context.db_().getSheetByName('Programacao').getDataRange().getValues().find(row => row[0] === 'PALESTRA_DANIELE');
   assert.equal(row[4], title);
   assert.equal(opening.form.title, 'Abertura — XXI Seminfo');
@@ -1937,13 +2187,14 @@ test('Atualiza títulos dos Forms e atividades preservando respostas, inscriçõ
   const created = e.stats.formsCreated;
   const questionIds = game.form.items.map(item => item.id);
   const result = e.context.atualizarFormularios();
-  const expected = 'Desenvolvimento de Jogos 2D com GameMaker — Tarde';
+  const activityTitle = 'Desenvolvimento de Jogos 2D com GameMaker — Tarde';
+  const expected = 'OFICINA - ' + activityTitle;
   assert.equal(game.form.title, expected);
   assert.equal(game.form.documentTitle, expected);
   assert.equal(raw.cells[1][0], 'Resposta preservada');
   assert.ok(result.abasDeRespostas.some(entry => entry.formId === game.form.id && entry.aba === 'Respostas — ' + expected));
   assert.equal(e.context.getRegistrationFormDefinitions_().find(entry => entry.id === game.form.id).title, expected);
-  assert.deepEqual({...e.context.readState_().activities.OFICINA_GAMEMAKER}, {...before, title: expected});
+  assert.deepEqual({...e.context.readState_().activities.OFICINA_GAMEMAKER}, {...before, title: activityTitle});
   assert.deepEqual(game.form.items.map(item => item.id), questionIds);
   assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'A'), 1);
   assert.equal(input.form.responses.length, 1);
@@ -1952,6 +2203,34 @@ test('Atualiza títulos dos Forms e atividades preservando respostas, inscriçõ
   const operations = e.context.readJournal_().operations.length;
   e.context.atualizarFormularios();
   assert.equal(e.context.readJournal_().operations.length, operations);
+});
+
+test('Form existente de linguagem C é incorporado, nomeado e recebe inscrições sem duplicar perguntas', () => {
+  const e = environment(); e.begin();
+  const c = e.manualRegistration('OFICINA_C', {title: 'Formulário antigo de C'});
+  c.name.setTitle('Nome Completo'); c.cpf.setTitle('CPF (xxx.xxx.xxx-xx)');
+  const ids = c.form.items.map(item => item.id), created = e.stats.formsCreated;
+  e.context.SEMINFO_CONFIG = Object.freeze({...e.context.SEMINFO_CONFIG,
+    FORMULARIOS_INSCRICAO_JSON: JSON.stringify([{id: c.form.id, activityId: 'OFICINA_C',
+      title: 'OFICINA - Introdução à linguagem C', items: {}}])});
+  e.context.atualizarProgramacaoSeminfo2026();
+  assert.equal(c.form.title, 'OFICINA - Introdução à linguagem C');
+  assert.equal(c.form.documentTitle, c.form.title);
+  assert.deepEqual(c.form.items.map(item => item.id), ids);
+  assert.equal(e.stats.formsCreated, created);
+  assert.equal(e.context.readState_().activities.OFICINA_C.capacity, 40);
+  const definition = e.context.getRegistrationFormDefinitions_().find(source => source.id === c.form.id);
+  assert.equal(definition.activityId, 'OFICINA_C');
+  e.context.configurarEmailVerificadoFormularios(); e.context.abrirInscricoes();
+  const input = e.responseFrom(c);
+  assert.equal(e.context.processFormResponse_('INSCRICAO', input.form, input.response).code, 'confirmed');
+  assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'OFICINA_C'), 1);
+  const count = e.context.readJournal_().operations.length;
+  e.context.atualizarProgramacaoSeminfo2026();
+  assert.equal(c.form.title, 'OFICINA - Introdução à linguagem C');
+  assert.equal(c.form.documentTitle, c.form.title);
+  assert.equal(c.form.responses.length, 1);
+  assert.equal(e.context.readJournal_().operations.length, count);
 });
 
 

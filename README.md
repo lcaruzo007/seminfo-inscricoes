@@ -22,7 +22,7 @@ Google Forms · Google Sheets · Google Apps Script
 
 O SEMINFO conecta os formulários do evento a uma planilha central. Cada solicitação passa por validação de identidade, CPF, disponibilidade e conflito de horário. O participante recebe o resultado por e-mail, e a organização acompanha inscrições, equipes e ocupação pelo menu **SEMINFO**.
 
-O projeto já inclui os **10 Forms de inscrição** e o Form histórico da CSP, além dos **18 itens da programação**, incluindo a abertura. A CSP aparece no inventário de Forms sem ser instalada como inscrição individual; suas respostas continuam no fluxo de importação por equipes. Atividades com informações incompletas aparecem como **pendentes** e recebem inscrições depois que seus dados forem completados e a abertura for autorizada.
+O projeto inclui **11 Forms por ID e 2 novos Forms por URL pública**, o Form histórico da CSP e os **18 itens da programação final**, incluindo a oficina de C com 40 vagas. A preparação resolve os IDs de edição dos novos Forms na conta instaladora. Títulos visíveis e nomes dos arquivos usam **PALESTRA - Nome da atividade** ou **OFICINA - Nome da atividade**. A CSP continua no fluxo de importação por equipes. Atividades com informações incompletas aparecem como **pendentes** e recebem inscrições depois que seus dados forem completados e a abertura for autorizada.
 
 ## O que o sistema faz
 
@@ -94,7 +94,7 @@ Depois de reabrir a planilha, o menu **SEMINFO** reúne as ações de operação
 | Exportar uma lista de confirmados | `exportarConfirmados` |
 | Recuperar as abas de consulta | `reconstruirVisoes` |
 
-**Atualizar a programação** acrescenta os cadastros que faltam e aplica os novos títulos em `Atividades`, `Programacao` e nos Forms, preservando horários, vagas e inscrições. As atividades pendentes aparecem em `Atividades` e `Programacao`; seus Forms ficam fechados até completar os dados e habilitar a recepção.
+**Atualizar a programação** aplica os nomes, ministrantes, salas, horários e capacidades finais em `Atividades` e `Programacao`, incorpora os novos Forms e atualiza títulos e descrições. A migração mantém inscrições e registra a mudança no livro oficial; recusa o lote se uma capacidade ficar abaixo da ocupação ou os novos horários causarem conflitos. Consulte o [roteiro da programação final](docs/PROGRAMACAO_FINAL.md) para aplicar a atualização existente e conferir pendências.
 
 **Começar do zero** é uma operação separada: `comecarSeminfo2026DoZero` apaga os dados operacionais, limpa as respostas dos Forms de inscrição/cancelamento e mantém as respostas do Form histórico da CSP para permitir sua importação após o reinício. Cria backups ocultos e carrega a programação novamente. Os IDs, links e perguntas dos Forms são mantidos. Consulte o [guia de reinicialização](docs/COMECAR_DO_ZERO.md) antes de usar essa função.
 
@@ -102,16 +102,17 @@ Depois de reabrir a planilha, o menu **SEMINFO** reúne as ações de operação
 
 | Data | Programação de referência |
 |---|---|
-| **26/10 · Segunda-feira** | Abertura, credenciamento, homenagem, palestra de Renato, coffee break e atividade noturna a confirmar. |
-| **27/10 · Terça-feira** | Oficinas de Jogos, Yasmin e Gabriel, 3D, Ollama, IA Além do Chat e Palestra Bio. |
+| **26/10 · Segunda-feira** | Das 13h às 17h: credenciamento, palestra de Douglas e coffee break, no Auditório Novo. Às 19h: Troubleshooting e dados no mundo real, com Ana Carolina Brazão, via Google Meet. |
+| **27/10 · Terça-feira** | GameMaker (tarde e noite), Pipeline de Dados, Blender (20 vagas), Ollama, IA Além do Chat, Introdução à linguagem C (40 vagas) e palestra ABREU às 13h30. |
 | **28/10 · Quarta-feira** | Oficina Segurança da Informação e palestra online de Daniele Tavares. |
-| **29/10 · Quinta-feira** | Competição Seminfo de Programação, encerramento e palestra online de Johnatan UFLA. |
+| **29/10 · Quinta-feira** | CSP das 13h às 15h30; encerramento das 15h30 às 17h; palestra online de Johnatan Alves de Oliveira às 19h30. |
 
 Os dados de referência estão em [`data/`](data):
 
 - [Programação e pendências](data/PROGRAMACAO_SEMINFO_2026.json).
 - [Cadastros das atividades](data/ATIVIDADES_SEMINFO_2026.json).
 - [Forms, nomes e vínculos](data/FORMULARIOS_SEMINFO_2026.json).
+- [Novos Forms por URL pública](data/FORMULARIOS_PUBLICOS_SEMINFO_2026.json).
 - [Configuração da importação de equipes CSP](data/CONFIG_IMPORTACAO_CSP_EQUIPES.json).
 
 ## Estrutura
@@ -174,6 +175,6 @@ Organização e controle das inscrições da Semana da Informática.
 
 </div>
 
-Para aplicar os novos títulos em uma instalação existente, copie `Config.gs` e `Admin.gs` atualizados para o Apps Script, salve e reabra a planilha. Use **SEMINFO → Atualizar nomes dos formulários** (ou execute `atualizarFormularios`). A ação preserva respostas, inscrições, horários e vagas.
+Para aplicar os novos títulos nos Forms já integrados, copie `Config.gs` e `Admin.gs` atualizados para o Apps Script, salve e reabra a planilha. Use **SEMINFO → Atualizar nomes dos formulários** (ou execute `atualizarFormularios`). O título visível e o arquivo no Drive usam `PALESTRA - Nome da atividade` ou `OFICINA - Nome da atividade`, preservando respostas, inscrições, horários e vagas. Para também incorporar o Form de linguagem C à instalação, atualize os arquivos `.gs` do pacote e execute `atualizarProgramacaoSeminfo2026`.
 
 A atualização também renomeia os arquivos dos Forms no Drive e as abas de respostas vinculadas. Copie também `src/appsscript.json` para o manifesto do projeto e autorize o acesso de edição ao Drive solicitado na próxima execução.

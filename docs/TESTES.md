@@ -2,13 +2,13 @@
 
 ## Executados localmente
 
-Em 20/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **168 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
+Em 23/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **188 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
 
 | Suíte | Testes | Evidência |
 |---|---:|---|
-| `tests/domain.test.cjs` | 30 | Regras puras de CPF, identidade, vagas, intervalos, trocas, replay e administração |
-| `tests/notifications.test.cjs` | 19 | Cota incluindo CC, deduplicação, leases, falhas, modelos, prazo e duplicação após envio interrompido |
-| `tests/forms-install.test.cjs` | 104 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
+| `tests/domain.test.cjs` | 32 | Regras puras de CPF, identidade, vagas, intervalos, trocas, replay e administração |
+| `tests/notifications.test.cjs` | 20 | Cota incluindo CC, deduplicação, leases, falhas, modelos, prazo e duplicação após envio interrompido |
+| `tests/forms-install.test.cjs` | 121 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
 | `tests/persistence.test.cjs` | 15 | Injeção de falhas antes/depois do append, recuperação, corrupção e releitura sob lock simulado |
 
 As suítes usam `node:test`/`assert`, `vm` e `crypto`, todos nativos do Node, e carregam os módulos de `src/`. Execute cada arquivo na raiz do projeto conforme o [README](../README.md). São apropriados também para ambientes que não permitem subprocessos do executor `node --test`. O empacotamento gera `dist/test-results.txt` com a saída da execução final; os relatórios e pacotes de `dist/` ficam fora do Git.
@@ -17,7 +17,7 @@ A atualização de reinício cobre exclusão de atividade, recusa quando há ins
 
 A correção de Form sem destino reproduz a mensagem **“O formulário não tem nenhum destino de resposta no momento.”** e a equivalente em inglês, com e sem ponto e com prefixo `Exception:`. A limpeza completa conserva as perguntas, faz backup e apaga as respostas mesmo sem planilha vinculada; a instalação consegue criar o destino central. Erros de acesso, recuperação de dados e mensagens diferentes continuam sendo propagados.
 
-O cadastro completo cobre as 18 atividades, incluindo abertura e palestras pendentes, sem inventar horários/capacidades. Testa o bloqueio de inscrições em cadastros incompletos, preenchimento necessário para abrir, projeção com capacidade vazia, recusa de snapshot incompleto em confirmação, atualização idempotente que mantém inscrições e ajustes existentes, integração do Form de abertura sem criar outro Form, fechamento dos Forms pendentes e bloqueio da importação CSP até completar a capacidade em equipes.
+O cadastro completo cobre os 18 itens da programação final, incluindo C com 40 vagas e horário das 13h às 17h, Pipeline, Blender com 20 vagas, ministrantes completos e os novos horários da CSP e encerramento. Testa a atualização atômica com inscrições existentes e snapshots, a recusa integral por conflito ou excesso de inscritos e a repetição sem operações extras. Os dois Forms públicos são incorporados sem duplicar perguntas ou respostas; a busca no Drive verifica a URL para evitar vincular homônimos. Descrições antigas são corrigidas preservando o restante dos textos, e a fila reconhece as capacidades alteradas na programação final. Também cobre cadastros pendentes, integração da abertura, retirada da homenagem e manutenção de fechamentos administrativos.
 
 A suíte de Forms também reproduz a falha da mensagem opcional de fechamento em português e inglês durante fechamento e reabertura de Forms publicados. Confere que esse erro isolado permite continuar, que outros erros não são ignorados e que falhas reais em publicação/recebimento informam a etapa e o ID do Form. Os IDs da configuração de produção são substituídos apenas no ambiente simulado dos testes.
 
@@ -28,6 +28,10 @@ A política de notificações é verificada com confirmação sem CC, problemas 
 A importação administrativa da CSP tem testes de prévia sem efeitos sobre inscrições/e-mails, restrição à conta instaladora, origem auditada de e-mail informado, lotes retomáveis, duplicidade, lotação, CPF inválido, identidade incompatível, conflito sem autorizar troca, prévia invalidada por edição das respostas ou mudança do estado, data-limite da prévia, detecção de perguntas e mapeamentos ambíguos. Também testa a recuperação por uma aba de backup e a preservação das respostas da fonte CSP durante a limpeza completa. A integração com a fila real confere confirmação sem CC e aviso de capacidade ao CA, preservando a exigência de coleta nativa nos gatilhos normais.
 
 A recuperação de uma cópia de `IntegrantesEquipes` testa o agrupamento por ID original, CPF com zero inicial, coach, texto multilinha, origem e ausência de data/situação histórica. Cobre restauração sem respostas ou perguntas, backup protegido que não é sobrescrito, inclusão de novas respostas preservando equipes recuperadas, deduplicação entre cópia e Form, manutenção de cancelamentos, recusa de IDs divergentes, pendências de CPF/coach e bloqueio após alterações na fonte. Dados pessoais usados para preparar uma entrega privada ficam em `dist/`, fora dos testes e do ZIP do projeto.
+
+A regressão de **“Inscrição ativa duplicada.”** reproduz o bloqueio causado por equipe incompleta com CPF já inscrito, tanto no Form quanto no backup. Confere que novas equipes continuam entrando em `Equipes` e `IntegrantesEquipes`, que as já importadas permanecem e que repetir não acrescenta operações. Também cobre CPF repetido dentro de uma equipe com outro membro incompleto, nome repetido sem CPF e conflito de horário com CPF conhecido; CPFs vazios de equipes diferentes não geram duplicidade.
+
+Os títulos e os arquivos dos Forms são conferidos com `PALESTRA - Nome` e `OFICINA - Nome`, inclusive na palestra `NOITE_26`, cujo ID histórico não indica o tipo. A integração do Form de linguagem C cobre detecção das perguntas existentes, manutenção de IDs, 40 vagas, recebimento de inscrição e repetição sem novas operações ou prefixos duplicados.
 
 ## Correspondência com os 16 requisitos de teste
 

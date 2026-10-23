@@ -365,6 +365,19 @@ test('reduzir capacidade até a ocupação gera aviso; atividade sem inscritos n
   assert.equal(capacityAlerts(env)[0].OPERACAO, reduction.key);
 });
 
+test('programação final projeta novas capacidades no aviso ao CA sem duplicar alertas', () => {
+  const env = setup();
+  const initial = capacityCatalog('O01', 3), first = capacityConfirmation('F:A'), second = capacityConfirmation('F:B');
+  const update = {key: 'PROGRAM:FINAL', kind: 'PROGRAM_UPDATE', at: '2026-10-23T12:00:00Z',
+    activities: [{...initial.activity, capacity: 2, title: 'Título final'}]};
+  const operations = [initial, first, second, update];
+  env.sync(operations);
+  assert.equal(capacityAlerts(env).length, 1);
+  assert.match(capacityAlerts(env)[0].CORPO, /2\/2/);
+  assert.match(capacityAlerts(env)[0].ASSUNTO, /Título final/);
+  assert.equal(env.sync(operations), 0);
+});
+
 test('atualização remove CC dos sucessos pendentes e preserva enviados, claims ativos e problemas', () => {
   const env = setup();
   const operations = [operation('F:PENDENTE'), operation('F:ENVIADA'), operation('F:ATIVA'), operation('F:PROBLEMA', 'conflict', {changes: []})];

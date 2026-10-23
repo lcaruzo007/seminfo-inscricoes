@@ -14,15 +14,25 @@ var SEMINFO_CONFIG = Object.freeze({
     items: {TEAM_TYPE: 742351656, TEAM_NAME: 396811097, TEAM_SIZE: 1358170985, MEMBER1: 98572697, MEMBER2: 1537440165, MEMBER3: 1869818828}}),
   FORMULARIOS_INSCRICAO_JSON: JSON.stringify([
     {id: '1gD2e10L3Zx4cL56TkEIkpgnaP7uX6Qfo1PnAsGYg5fs', activityId: 'ABERTURA_2026', title: 'Abertura — XXI Seminfo', items: {}},
-    {id: '1RBZLZRULRV9Tm9ca-IF4jo9-XfqDPDEYW0QXZF2Osj8', activityId: 'OFICINA_GAMEMAKER', title: 'Desenvolvimento de Jogos 2D com GameMaker — Tarde', items: {NAME: 859649298, CPF: 760956815, SWAP: 356100908}},
-    {id: '1_5SDFy4fo9_Z4VHRGknl9Zk3cKdSpo--qmBGiA3LbGU', activityId: 'OFICINA_JOGOS_NOITE', title: 'Desenvolvimento de Jogos 2D com GameMaker — Noite', items: {}},
-    {id: '1Gi6L9zhuS_QC1WfdggJ9DKFh7JheOIkuAPJS3CAZROQ', activityId: 'OFICINA_BLENDER', title: 'Introdução ao 3D com Blender', items: {NAME: 859649298, CPF: 760956815, SWAP: 886894478}},
-    {id: '1pxsvR0WlyH3QXcUUYTAhFMTd-FnbsfwekesEED9IxcU', activityId: 'OFICINA_OLLAMA', title: 'Rodando Inteligência Artificial no seu PC com Ollama', items: {}},
-    {id: '16O4ErOSmYY9X0y0xGdKZ0w9p2WNStUAWb_CF65OuMjs', activityId: 'OFICINA_IA_ALEM_CHAT', title: 'Oficina IA Além do Chat — Rafaela', items: {}},
-    {id: '1g-uG-5jHRtSXm7hW5R3ynBVkuCTrKtjnW3heKfz3es8', activityId: 'PALESTRA_BIO', title: 'Acervo Brasileiro de Referências sobre Eugenia (ABREU): o uso de ferramentas Google na construção de uma plataforma de divulgação científica', items: {}},
-    {id: '1wSyqdk-CWLhizEJI9YkkikDkHkyWoZ6ZfmsCLIZvuQs', activityId: 'OFICINA_SEGURANCA', title: 'Segurança da Informação na Prática: Aprenda, Identifique e Proteja-se', items: {}},
-    {id: '1_RzlNsniwp_NryGGu1F5uHOGSLvEYvg_xn4BEXnnNgI', activityId: 'PALESTRA_DANIELE', title: 'Computação Quântica: Entendendo o contexto para inovar no futuro', items: {}},
-    {id: '14Uf2m_mLeZJSDjX7vgwkiriY5hKbDD9EKuS2EUNM8_Q', activityId: 'PALESTRA_JOHNATAN', title: 'Ainda precisamos aprender a programar? O futuro da Engenharia de Software na era da Inteligência Artificial', items: {}}
+    {id: '1RBZLZRULRV9Tm9ca-IF4jo9-XfqDPDEYW0QXZF2Osj8', activityId: 'OFICINA_GAMEMAKER', title: 'OFICINA - Desenvolvimento de Jogos 2D com GameMaker — Tarde', items: {NAME: 859649298, CPF: 760956815, SWAP: 356100908}},
+    {id: '1_5SDFy4fo9_Z4VHRGknl9Zk3cKdSpo--qmBGiA3LbGU', activityId: 'OFICINA_JOGOS_NOITE', title: 'OFICINA - Desenvolvimento de Jogos 2D com GameMaker — Noite', items: {}},
+    {id: '1Gi6L9zhuS_QC1WfdggJ9DKFh7JheOIkuAPJS3CAZROQ', activityId: 'OFICINA_BLENDER', title: 'OFICINA - Introdução ao 3D com Blender', items: {NAME: 859649298, CPF: 760956815, SWAP: 886894478}},
+    {id: '1pxsvR0WlyH3QXcUUYTAhFMTd-FnbsfwekesEED9IxcU', activityId: 'OFICINA_OLLAMA', title: 'OFICINA - Rodando Inteligência Artificial no seu PC com Ollama', items: {}},
+    {id: '16O4ErOSmYY9X0y0xGdKZ0w9p2WNStUAWb_CF65OuMjs', activityId: 'OFICINA_IA_ALEM_CHAT', title: 'OFICINA - IA Além do Chat: Guia Prático para Geração de Imagens e Vídeos com o Gemini', items: {}},
+    {id: '1tgltFxUPnZ6yuXuYi6TCE3aoms4Cu_CkCLRl-r-wHv8', activityId: 'OFICINA_C', title: 'OFICINA - Introdução à linguagem C', items: {}},
+    {id: '1g-uG-5jHRtSXm7hW5R3ynBVkuCTrKtjnW3heKfz3es8', activityId: 'PALESTRA_BIO', title: 'PALESTRA - Acervo Brasileiro de Referências sobre Eugenia (ABREU): o uso de ferramentas Google na construção de uma plataforma de divulgação científica', items: {}},
+    {id: '1wSyqdk-CWLhizEJI9YkkikDkHkyWoZ6ZfmsCLIZvuQs', activityId: 'OFICINA_SEGURANCA', title: 'OFICINA - Segurança da Informação na Prática: Aprenda, Identifique e Proteja-se', items: {}},
+    {id: '1_RzlNsniwp_NryGGu1F5uHOGSLvEYvg_xn4BEXnnNgI', activityId: 'PALESTRA_DANIELE', title: 'PALESTRA - Computação Quântica: Entendendo o contexto para inovar no futuro', items: {}},
+    {id: '14Uf2m_mLeZJSDjX7vgwkiriY5hKbDD9EKuS2EUNM8_Q', activityId: 'PALESTRA_JOHNATAN', title: 'PALESTRA - Ainda precisamos aprender a programar? O futuro da Engenharia de Software na era da Inteligência Artificial', items: {}}
+  ]),
+  // URLs de participação: a preparação encontra e salva os IDs de edição pela conta instaladora.
+  FORMULARIOS_PUBLICOS_SEMINFO_JSON: JSON.stringify([
+    {activityId: 'NOITE_26', title: 'PALESTRA - Troubleshooting e dados no mundo real', driveTitle: 'Troubleshooting e Dados no Mundo Real',
+      url: 'https://docs.google.com/forms/d/e/1FAIpQLScCDB2cwaTrJA7yh3pkC-b4RJ3FpF-6ZKYJtWEFeZ7hfjo03Q/viewform',
+      shortUrl: 'https://forms.gle/1DgMW8A67AYL9XGd7', items: {NAME: 859649298, CPF: 760956815, SWAP: 106298485}},
+    {activityId: 'OFICINA_YASMIN_GABRIEL', title: 'OFICINA - Pipeline de Dados em Tempo Real: Do Zero ao Dashboard', driveTitle: 'Pipeline de Dados em Tempo Real: Do Zero ao Dashboard',
+      url: 'https://docs.google.com/forms/d/e/1FAIpQLSdbkDS0NSEfUkzCC5PHI-oWCaowrNnstv2hFwUNv_gliAWSlw/viewform',
+      shortUrl: 'https://forms.gle/cqNfxjiGQfii2BjQ8', items: {NAME: 859649298, CPF: 760956815, SWAP: 1968119424}}
   ]),
   CRIAR_FORM_CANCELAMENTO: true,
   MAX_EMAILS_POR_EXECUCAO: 10,

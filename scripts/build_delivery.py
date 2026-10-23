@@ -53,13 +53,17 @@ def main():
 
     metadata_script = "const fs=require('node:fs'),vm=require('node:vm'); const c=vm.createContext({}); for(const f of ['Domain.gs','Config.gs','Admin.gs']) vm.runInContext(fs.readFileSync('src/'+f,'utf8'),c); const program=c.programacaoSeminfo2026_(); process.stdout.write(JSON.stringify({forms:JSON.parse(c.SEMINFO_CONFIG.FORMULARIOS_INSCRICAO_JSON),program,activities:program.map(c.atividadeDaProgramacao_)}));"
     metadata = json.loads(run_node(["-e", metadata_script]))
-    assert len(metadata["forms"]) == 10
-    assert len({form["id"] for form in metadata["forms"]}) == 10
+    assert len(metadata["forms"]) == 11
+    assert len({form["id"] for form in metadata["forms"]}) == 11
     assert len(metadata["activities"]) == 18
+    public_script = "const fs=require('node:fs'),vm=require('node:vm'); const c=vm.createContext({}); vm.runInContext(fs.readFileSync('src/Config.gs','utf8'),c); process.stdout.write(c.SEMINFO_CONFIG.FORMULARIOS_PUBLICOS_SEMINFO_JSON);"
+    public_forms = json.loads(run_node(["-e", public_script]))
+    assert len(public_forms) == 2
     for filename, value in [
         ("FORMULARIOS_SEMINFO_2026.json", metadata["forms"]),
         ("PROGRAMACAO_SEMINFO_2026.json", metadata["program"]),
         ("ATIVIDADES_SEMINFO_2026.json", metadata["activities"]),
+        ("FORMULARIOS_PUBLICOS_SEMINFO_2026.json", public_forms),
     ]:
         (DATA / filename).write_text(json.dumps(value, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 

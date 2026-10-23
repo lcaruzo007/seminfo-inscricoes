@@ -459,13 +459,17 @@ function cspImportOutcome_(state, request) {
         try { return parseCspTeamMember_(raw, index + 1); }
         catch (_) { return {name: raw.split(/[\n,;\d]/)[0].replace(/\s*[-:]\s*$/, '').trim(), cpf: '', raw: raw, role: index === 0 ? 'coach' : 'integrante'}; }
       }).filter(function (member) { return !!member; });
-      var team = {id: request.key + ':equipe', entityType: 'EQUIPE', administrativeIncomplete: true,
-        teamName: request.teamName || 'Equipe sem nome (' + request.responseId + ')', teamType: request.teamType || '',
-        cpf: members[0] && members[0].cpf || '', members: members, declaredSize: request.declaredSize,
-        dataIssues: request.importErrors.concat([outcome.message]), rawMembers: request.rawMembers,
-        activityId: request.activityId, activity: activity, status: 'confirmada', createdAt: request.submittedAt};
-      outcome = {code: 'confirmed', message: 'Equipe confirmada administrativamente; completar dados depois. ' + outcome.message,
-        activity: activity, changes: [{type: 'CONFIRM', registration: team}]};
+      var dataIssue = outcome.message;
+      var incompleteRequest = Object.assign({}, request, {invalidAnswer: false, members: members,
+        teamName: request.teamName || 'Equipe sem nome (' + request.responseId + ')'});
+      outcome = SemDomain.decideTeam(decisionState, incompleteRequest, {administrativeIncomplete: true});
+      if (outcome.code === 'confirmed') {
+        var team = outcome.changes[0].registration;
+        team.declaredSize = request.declaredSize;
+        team.dataIssues = (request.importErrors || []).concat([dataIssue]);
+        team.rawMembers = request.rawMembers;
+        outcome.message = 'Equipe confirmada administrativamente; completar dados depois. ' + dataIssue;
+      }
     }
   }
   if (outcome.participant) outcome.participant.identitySource = request.identitySource;
