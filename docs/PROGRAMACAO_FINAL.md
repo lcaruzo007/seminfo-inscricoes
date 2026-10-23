@@ -11,6 +11,8 @@ IFSULDEMINAS — Campus Muzambinho, de 26 a 29 de outubro de 2026.
 
 Os títulos visíveis e os nomes dos arquivos no Drive seguem **PALESTRA - Nome da atividade** e **OFICINA - Nome da atividade**. Exemplos: `PALESTRA - Computação Quântica: Entendendo o contexto para inovar no futuro` e `OFICINA - Introdução à linguagem C`. Abertura e competição mantêm seus títulos próprios. Para reaplicar somente os nomes nos Forms já integrados, use **SEMINFO → Atualizar nomes dos formulários** ou `atualizarFormularios`.
 
+Salvar um JSON em **Cadastrar / atualizar atividade** atualiza o cadastro e as opções; esse caminho não renomeia o arquivo no Drive. Para renomear o título e o arquivo, execute `atualizarFormularios` pela conta instaladora após salvar `Admin.gs` atualizado. Essa função atua somente nas atividades com Forms de inscrição vinculados e exclui a CSP; conserva horários, capacidades e inscrições existentes.
+
 `carregarProgramacaoSeminfo2026` continua sendo a função que somente acrescenta cadastros ausentes. Para atualizar os valores existentes, use `atualizarProgramacaoSeminfo2026`.
 
 ## Alterações aplicadas

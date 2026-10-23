@@ -2233,6 +2233,29 @@ test('Form existente de linguagem C é incorporado, nomeado e recebe inscriçõe
   assert.equal(e.context.readJournal_().operations.length, count);
 });
 
+test('Renomear Forms atualiza título e arquivo sem alterar o cadastro, o Form ou a guia da CSP', () => {
+  const e = teamCspEnvironment(60);
+  const csp = {...e.context.readState_().activities.CSP_2026, title: 'Nome próprio da CSP'};
+  e.context.salvarAtividade(csp);
+  const game = e.manualRegistration('OFICINA_GAMEMAKER');
+  e.context.setConfig_('FORMULARIOS_INSCRICAO_JSON', JSON.stringify([
+    ...e.context.getRegistrationFormDefinitions_(), game.definition]));
+  e.context.instalarSistema();
+  const savedCsp = JSON.stringify(e.context.readState_().activities.CSP_2026);
+  const savedForm = JSON.stringify({title: e.form.title, name: e.form.documentTitle,
+    destination: e.form.destination, description: e.form.description, accepting: e.form.accepting});
+  const cspSheet = e.context.db_().insertSheet('Guia própria da CSP');
+  cspSheet.formUrl = e.form.getPublishedUrl();
+  const result = e.context.atualizarFormularios();
+  assert.equal(game.form.title, 'OFICINA - Desenvolvimento de Jogos 2D com GameMaker — Tarde');
+  assert.equal(game.form.documentTitle, game.form.title);
+  assert.equal(JSON.stringify(e.context.readState_().activities.CSP_2026), savedCsp);
+  assert.equal(JSON.stringify({title: e.form.title, name: e.form.documentTitle,
+    destination: e.form.destination, description: e.form.description, accepting: e.form.accepting}), savedForm);
+  assert.equal(cspSheet.name, 'Guia própria da CSP');
+  assert.ok(result.formularios.every(form => form.id !== e.form.id));
+});
+
 
 test('Leitor CSP aceita CPF com ponto final, colado ao nome e quebras HTML', () => {
   const e = environment();

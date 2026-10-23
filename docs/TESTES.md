@@ -2,13 +2,13 @@
 
 ## Executados localmente
 
-Em 23/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **188 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
+Em 23/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **189 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
 
 | Suíte | Testes | Evidência |
 |---|---:|---|
 | `tests/domain.test.cjs` | 32 | Regras puras de CPF, identidade, vagas, intervalos, trocas, replay e administração |
 | `tests/notifications.test.cjs` | 20 | Cota incluindo CC, deduplicação, leases, falhas, modelos, prazo e duplicação após envio interrompido |
-| `tests/forms-install.test.cjs` | 121 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
+| `tests/forms-install.test.cjs` | 122 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
 | `tests/persistence.test.cjs` | 15 | Injeção de falhas antes/depois do append, recuperação, corrupção e releitura sob lock simulado |
 
 As suítes usam `node:test`/`assert`, `vm` e `crypto`, todos nativos do Node, e carregam os módulos de `src/`. Execute cada arquivo na raiz do projeto conforme o [README](../README.md). São apropriados também para ambientes que não permitem subprocessos do executor `node --test`. O empacotamento gera `dist/test-results.txt` com a saída da execução final; os relatórios e pacotes de `dist/` ficam fora do Git.
@@ -32,6 +32,8 @@ A recuperação de uma cópia de `IntegrantesEquipes` testa o agrupamento por ID
 A regressão de **“Inscrição ativa duplicada.”** reproduz o bloqueio causado por equipe incompleta com CPF já inscrito, tanto no Form quanto no backup. Confere que novas equipes continuam entrando em `Equipes` e `IntegrantesEquipes`, que as já importadas permanecem e que repetir não acrescenta operações. Também cobre CPF repetido dentro de uma equipe com outro membro incompleto, nome repetido sem CPF e conflito de horário com CPF conhecido; CPFs vazios de equipes diferentes não geram duplicidade.
 
 Os títulos e os arquivos dos Forms são conferidos com `PALESTRA - Nome` e `OFICINA - Nome`, inclusive na palestra `NOITE_26`, cujo ID histórico não indica o tipo. A integração do Form de linguagem C cobre detecção das perguntas existentes, manutenção de IDs, 40 vagas, recebimento de inscrição e repetição sem novas operações ou prefixos duplicados.
+
+A renomeação isolada também confere a preservação do cadastro e do nome próprio da CSP, do título/arquivo, descrição, destino, recebimento e da guia vinculada ao seu Form. O cadastro por JSON e a ação de renomear arquivos são caminhos separados.
 
 ## Correspondência com os 16 requisitos de teste
 

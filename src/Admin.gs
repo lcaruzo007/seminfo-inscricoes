@@ -614,6 +614,7 @@ function atualizarFormularios(deferRefresh) {
     var program = programacaoSeminfo2026_();
     var titles = {}, formTitles = {};
     program.forEach(function (entry) {
+      if (entry.id === 'CSP_2026' || !definitions.some(function (source) { return source.activityId === entry.id; })) return;
       titles[entry.id] = entry.title;
       formTitles[entry.id] = tituloFormularioDaAtividade_(entry);
     });
