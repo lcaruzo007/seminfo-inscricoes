@@ -2,13 +2,13 @@
 
 ## Executados localmente
 
-Em 23/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **189 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
+Em 26/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **222 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
 
 | Suíte | Testes | Evidência |
 |---|---:|---|
 | `tests/domain.test.cjs` | 32 | Regras puras de CPF, identidade, vagas, intervalos, trocas, replay e administração |
 | `tests/notifications.test.cjs` | 20 | Cota incluindo CC, deduplicação, leases, falhas, modelos, prazo e duplicação após envio interrompido |
-| `tests/forms-install.test.cjs` | 122 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
+| `tests/forms-install.test.cjs` | 155 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
 | `tests/persistence.test.cjs` | 15 | Injeção de falhas antes/depois do append, recuperação, corrupção e releitura sob lock simulado |
 
 As suítes usam `node:test`/`assert`, `vm` e `crypto`, todos nativos do Node, e carregam os módulos de `src/`. Execute cada arquivo na raiz do projeto conforme o [README](../README.md). São apropriados também para ambientes que não permitem subprocessos do executor `node --test`. O empacotamento gera `dist/test-results.txt` com a saída da execução final; os relatórios e pacotes de `dist/` ficam fora do Git.
@@ -25,6 +25,12 @@ A configuração administrativa de e-mail verificado cobre vários Forms, inclui
 
 A política de notificações é verificada com confirmação sem CC, problemas com CC, aviso direto ao CA na última vaga, deduplicação, prioridade com cota curta, nova lotação após cancelamento, troca entre atividades, redução de capacidade e remoção do CC de sucessos pendentes. Um teste de integração carrega também `Notifications.gs` real junto do livro de operações e confere confirmação, conflito e aviso de capacidade sem repetir envios na reconstrução.
 
+A criação dos Meets cobre as três palestras online, reservas das 19h às 22h no fuso de Brasília, links na aba `Meets`, pedidos distintos de conferência e repetição sem eventos duplicados. Verifica também a atualização dos eventos anteriores das 19h30, preservando links e demais dados. Simula geração assíncrona, resposta perdida após criar o evento, conflito de ID, nova tentativa de conferência falha, falta de permissão, serviço desativado, conta incorreta e evento excluído. Confere a liberação do bloqueio após erros; os serviços do Calendar são simulados, sem criação real de reuniões.
+
+A consulta isolada de cota funciona com configuração/Forms indisponíveis, gatilhos ausentes e marcadores de instalação/limpeza, sem alterar o estado. O reparo isolado recupera gatilhos faltantes e duplicados de 13 Forms, preserva gatilhos externos, inscrições, respostas, configurações e fila, sem abrir os Forms. Testa a repetição, a retomada após falha parcial, a restrição à conta instaladora, a recusa de Form incompletamente instalado e os bloqueios administrativos, permitindo apenas a projeção rotineira de opções. São simulações locais; tempo e permissões do serviço real ainda dependem da conta Google.
+
+A reavaliação administrativa de recusas testa uma ocupação de 21 pessoas com seis solicitações recusadas: prevê e confirma somente quatro até a capacidade corrigida de 25, em ordem cronológica, mantendo o Form fechado. Confere prévia sem decisões, uma solicitação por CPF, origem e período verificados, preservação de cancelamentos/trocas e escolhas posteriores, conflitos e identidade incompatível. Inclui a recusa de prévia desatualizada, de capacidade inferior à ocupação, de atividade aberta e de outra conta; audita o vínculo com a resposta original, os quatro avisos de confirmação e o aviso de lotação ao CA. Uma interrupção após persistir a primeira confirmação retoma em nova prévia até 25, sem duplicações. O teste usa dados sintéticos e serviços simulados.
+
 A importação administrativa da CSP tem testes de prévia sem efeitos sobre inscrições/e-mails, restrição à conta instaladora, origem auditada de e-mail informado, lotes retomáveis, duplicidade, lotação, CPF inválido, identidade incompatível, conflito sem autorizar troca, prévia invalidada por edição das respostas ou mudança do estado, data-limite da prévia, detecção de perguntas e mapeamentos ambíguos. Também testa a recuperação por uma aba de backup e a preservação das respostas da fonte CSP durante a limpeza completa. A integração com a fila real confere confirmação sem CC e aviso de capacidade ao CA, preservando a exigência de coleta nativa nos gatilhos normais.
 
 A recuperação de uma cópia de `IntegrantesEquipes` testa o agrupamento por ID original, CPF com zero inicial, coach, texto multilinha, origem e ausência de data/situação histórica. Cobre restauração sem respostas ou perguntas, backup protegido que não é sobrescrito, inclusão de novas respostas preservando equipes recuperadas, deduplicação entre cópia e Form, manutenção de cancelamentos, recusa de IDs divergentes, pendências de CPF/coach e bloqueio após alterações na fonte. Dados pessoais usados para preparar uma entrega privada ficam em `dist/`, fora dos testes e do ZIP do projeto.
@@ -34,6 +40,10 @@ A regressão de **“Inscrição ativa duplicada.”** reproduz o bloqueio causa
 Os títulos e os arquivos dos Forms são conferidos com `PALESTRA - Nome` e `OFICINA - Nome`, inclusive na palestra `NOITE_26`, cujo ID histórico não indica o tipo. A integração do Form de linguagem C cobre detecção das perguntas existentes, manutenção de IDs, 40 vagas, recebimento de inscrição e repetição sem novas operações ou prefixos duplicados.
 
 A renomeação isolada também confere a preservação do cadastro e do nome próprio da CSP, do título/arquivo, descrição, destino, recebimento e da guia vinculada ao seu Form. O cadastro por JSON e a ação de renomear arquivos são caminhos separados.
+
+A regressão do cancelamento bloqueado durante atualização rotineira executa `menuCancelar` com a fila real simulada: confirma a liberação da vaga, o envio do aviso, a justificativa auditada e a preservação do marcador `VIEW`. Testa também correção de capacidade e reabertura de uma atividade durante essa rotina, com sincronização posterior do Form; falha nas opções após um cancelamento já persistido; bloqueios por instalação, limpeza, atualização administrativa e outra conta; e instalação iniciada entre a autorização inicial e a aquisição do lock. Nenhum teste envia mensagens ou altera formulários reais.
+
+A situação exibida em `Atividades` e na consulta de ocupação é conferida durante inscrição na última vaga (`lotada`), cancelamento com liberação (`aberta`), fechamento global (`encerrada`) e reabertura global. Os testes preservam pendências, cancelamentos e encerramentos administrativos, mesmo com vagas liberadas; reconstruções repetidas não alteram o livro oficial nem o cadastro. Na CSP, três integrantes de uma equipe não lotam uma atividade de duas vagas: somente a segunda equipe muda a consulta para `lotada`, e o cancelamento de uma equipe devolve a indicação `aberta`.
 
 ## Correspondência com os 16 requisitos de teste
 

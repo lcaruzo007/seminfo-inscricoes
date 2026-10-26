@@ -195,7 +195,7 @@ function syncNotificationQueueLocked_(operations) {
  * ainda pode ser consumida por outros projetos da mesma conta: trate a falha.
  */
 function processarNotificacoes(deadline) {
-  requireInstaller_();
+  requireInstaller_(false, true);
   var config = getConfig_();
   if (!notificationAddress_(config.EMAIL_CA)) throw new Error('Configure EMAIL_CA antes dos envios.');
   var configured = Number(config.MAX_EMAILS_POR_EXECUCAO || 10);
@@ -204,7 +204,7 @@ function processarNotificacoes(deadline) {
   // Evita ultrapassar 6 minutos mesmo que os serviços estejam lentos.
   var executionDeadline = Math.min(Date.now() + 4 * 60 * 1000, Number(deadline) || Infinity);
   for (var index = 0; index < maximum && Date.now() < executionDeadline; index++) {
-    var job = withLock_(function () { return claimNotificationLocked_(); });
+    var job = withLock_(function () { return claimNotificationLocked_(); }, false, false, true);
     if (!job) break;
     summary.tentativas++;
     var sendError = '';
@@ -227,7 +227,7 @@ function processarNotificacoes(deadline) {
       // Exceções do serviço podem trazer endereços: registra só classificação.
       sendError = notificationSafeError_(error);
     }
-    var recorded = withLock_(function () { return finishNotificationLocked_(job, sendError); });
+    var recorded = withLock_(function () { return finishNotificationLocked_(job, sendError); }, false, false, true);
     if (recorded && !sendError) summary.enviadas++;
     else summary.adiadas++;
     if (/^SEM_COTA:/.test(sendError)) break;

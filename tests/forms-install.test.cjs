@@ -196,7 +196,7 @@ function environment(defaultMode = 'VERIFIED') {
       deleteTrigger: trigger => triggers.splice(triggers.indexOf(trigger), 1),
       newTrigger: handler => {
         let id = '', event = '';
-        const builder = { forForm: form => { id = form.id; return builder; }, onFormSubmit: () => { event = 'ON_FORM_SUBMIT'; return builder; },
+        const builder = { forForm: form => { id = typeof form === 'string' ? form : form.id; assert(forms.has(id)); return builder; }, onFormSubmit: () => { event = 'ON_FORM_SUBMIT'; return builder; },
           timeBased: () => { event = 'CLOCK'; return builder; }, everyMinutes: () => builder,
           create: () => { stats.triggersCreated++; const trigger = {
             getHandlerFunction: () => handler, getEventType: () => event, getTriggerSourceId: () => id
@@ -302,6 +302,205 @@ test('Operações comuns são bloqueadas durante uma atualização externa de Fo
   const e = environment();
   e.properties.set('SEMINFO_FORM_REFRESH_PENDING', Date.now() + '|refresh-test');
   assert.throws(() => e.context.withLock_(() => true), /atualização dos Forms/);
+});
+
+test('Atualização visual permite registrar e recuperar inscrições sem sobrescrever o marcador em andamento', () => {
+  const e = environment(); e.begin();
+  const first = e.response('INSCRICAO');
+  const token = Date.now() + '|outra-execucao|VIEW';
+  e.properties.set('SEMINFO_FORM_REFRESH_PENDING', token);
+  assert.equal(e.context.processFormResponse_('INSCRICAO', first.form, first.response).code, 'confirmed');
+  assert.equal(e.context.tableRows_('Inscricoes').filter(row => row.SITUACAO === 'confirmada').length, 1);
+  assert.equal(e.properties.get('SEMINFO_FORM_REFRESH_PENDING'), token);
+  // Configurações externas dos Forms continuam exclusivas.
+  assert.throws(() => e.context.withExternalFormOperation_(() => true), /atualização dos Forms/);
+  e.response('INSCRICAO', {email: 'outra@example.org', answers: {CPF: '11144477735'}});
+  const recovered = e.context.processarSolicitacoesPendentes();
+  assert.equal(recovered.processadas, 1);
+  assert.equal(recovered.falhas, 0);
+  assert.equal(e.properties.get('SEMINFO_FORM_REFRESH_PENDING'), token);
+  assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'A'), 1, 'a última vaga continua protegida');
+  assert.equal(e.context.tableRows_('Erros').length, 0);
+  assert.equal(e.stats.lockHeld, false);
+});
+
+test('Envios simultâneos à atualização visual não duplicam refresh nem ultrapassam a última vaga', () => {
+  const e = environment(); e.begin();
+  const first = e.response('INSCRICAO');
+  const second = e.response('INSCRICAO', {email: 'outra@example.org', answers: {CPF: '11144477735'}});
+  const original = e.context.refreshFormsLocked_;
+  let calls = 0;
+  e.context.refreshFormsLocked_ = state => {
+    calls++;
+    assert.equal(e.stats.lockHeld, false);
+    assert.match(e.properties.get('SEMINFO_FORM_REFRESH_PENDING'), /\|VIEW$/);
+    assert.equal(e.context.processFormResponse_('INSCRICAO', first.form, first.response).code, 'confirmed');
+    assert.equal(e.context.processFormResponse_('INSCRICAO', second.form, second.response).code, 'full');
+    return original(state);
+  };
+  e.context.atualizarOpcoesFormularios();
+  assert.equal(calls, 1);
+  assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'A'), 1);
+  assert.equal(e.properties.has('SEMINFO_FORM_REFRESH_PENDING'), false);
+  assert.equal(e.context.tableRows_('Solicitacoes').length, 2);
+  e.context.refreshFormsLocked_ = original;
+  e.context.processarSolicitacoesPendentes();
+  assert.equal(first.form.accepting, false, 'a manutenção reaplica as opções com a ocupação atual');
+  assert.equal(e.context.tableRows_('Solicitacoes').length, 2);
+});
+
+test('Cancelamento pelo menu libera a vaga e envia confirmação durante atualização VIEW sem alterar seu marcador', () => {
+  const e = environment(), sent = [], alerts = [];
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'Notifications.gs'), 'utf8'), e.context);
+  e.context.MailApp.sendEmail = message => sent.push(message);
+  e.begin();
+  const input = e.response('INSCRICAO'); e.context.processFormResponse_('INSCRICAO', input.form, input.response);
+  e.context.processarNotificacoes(); // Esvazia a confirmação e o aviso de lotação anteriores.
+  sent.splice(0);
+  const token = Date.now() + '|rotina|VIEW'; e.properties.set('SEMINFO_FORM_REFRESH_PENDING', token);
+  e.context.promptText_ = () => JSON.stringify({cpf: '52998224725', activityId: 'A', reason: 'Membro do Centro Acadêmico.'});
+  e.context.SpreadsheetApp.getUi = () => ({alert: text => alerts.push(JSON.parse(text))});
+  e.context.menuCancelar();
+  assert.equal(alerts[0].code, 'canceled'); assert.equal(alerts[0].atualizacaoFormularios.adiada, true);
+  assert.equal(e.context.consultarOcupacao()[0].ocupacao, 0);
+  assert.equal(e.properties.get('SEMINFO_FORM_REFRESH_PENDING'), token);
+  const journal = e.context.readJournal_(), operation = journal.operations.find(operation => operation.key.startsWith('ADMIN:CANCEL:'));
+  assert.equal(journal.state.registrations[input.form.id + ':' + input.response.getId() + ':inscricao'].status, 'cancelada');
+  assert.equal(operation.reason, 'Membro do Centro Acadêmico.');
+  assert.equal(sent.length, 1); assert.match(sent[0].subject, /Cancelamento concluído/);
+  assert.equal(e.context.tableRows_('FilaEmails').find(row => row.OPERACAO === operation.key).SITUACAO, 'enviada');
+  assert.equal(e.stats.lockHeld, false);
+});
+
+test('Correção e reabertura de atividade coexistem com VIEW e publicam opções atuais depois da rotina', () => {
+  const e = environment(); e.begin();
+  const input = e.response('INSCRICAO'); e.context.processFormResponse_('INSCRICAO', input.form, input.response);
+  e.context.salvarAtividade(e.activity('A', {capacity: 30, status: 'encerrada'}));
+  const token = Date.now() + '|rotina|VIEW'; e.properties.set('SEMINFO_FORM_REFRESH_PENDING', token);
+  const result = e.context.salvarAtividade(e.activity('A', {capacity: 25, status: 'aberta'}));
+  assert.equal(result.capacity, 25); assert.equal(result.status, 'aberta');
+  assert.equal(e.context.consultarOcupacao()[0].ocupacao, 1);
+  assert.equal(e.context.consultarOcupacao()[0].capacidade, 25);
+  assert.equal(e.context.atualizarOpcoesFormularios().adiada, true);
+  assert.equal(e.properties.get('SEMINFO_FORM_REFRESH_PENDING'), token);
+  assert.equal(input.form.accepting, false, 'o Form aguarda a publicação das novas opções');
+  e.properties.delete('SEMINFO_FORM_REFRESH_PENDING');
+  e.context.atualizarOpcoesFormularios();
+  assert.equal(input.form.accepting, true);
+  assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'A'), 1);
+});
+
+test('Falha nas opções depois do cancelamento retorna sucesso com atualização adiada e preserva notificação', () => {
+  const e = environment(); e.begin();
+  const input = e.response('INSCRICAO'); e.context.processFormResponse_('INSCRICAO', input.form, input.response);
+  e.context.refreshFormsSafely_ = () => { throw new Error('Falha temporária nos Forms'); };
+  let notified = 0;
+  e.context.postProcessing_ = () => { notified++; };
+  const result = e.context.cancelarInscricaoAdministrativa('52998224725', 'A', 'Membro do Centro Acadêmico.');
+  assert.equal(result.code, 'canceled'); assert.equal(result.atualizacaoFormularios.adiada, true);
+  assert.match(result.atualizacaoFormularios.motivo, /Falha temporária/);
+  assert.equal(notified, 1); assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'A'), 0);
+  assert.equal(e.context.tableRows_('Erros').at(-1).CONTEXTO, 'cancelamento-opcoes');
+  assert.equal(e.stats.lockHeld, false);
+});
+
+test('Cancelamento e catálogo ainda respeitam atualização administrativa, instalação, limpeza e conta instaladora', () => {
+  const e = environment(); e.begin();
+  const input = e.response('INSCRICAO'); e.context.processFormResponse_('INSCRICAO', input.form, input.response);
+  const head = e.context.readJournal_().head;
+  for (const [key, value] of [
+    ['SEMINFO_FORM_REFRESH_PENDING', Date.now() + '|administracao'],
+    ['SEMINFO_INSTALL_PENDING', Date.now() + '|instalacao'],
+    ['SEMINFO_RESET_PENDING', '{"phase":"backup"}']
+  ]) {
+    e.properties.set(key, value);
+    assert.throws(() => e.context.cancelarInscricaoAdministrativa('52998224725', 'A', 'Membro do Centro Acadêmico.'), /andamento|interrompida/);
+    assert.throws(() => e.context.salvarAtividade(e.activity('A', {capacity: 25})), /andamento|interrompida/);
+    assert.equal(e.context.readJournal_().head, head);
+    assert.equal(e.properties.get(key), value);
+    e.properties.delete(key);
+  }
+  e.context.Session.getEffectiveUser = () => ({getEmail: () => 'outra@example.org'});
+  assert.throws(() => e.context.cancelarInscricaoAdministrativa('52998224725', 'A', 'Membro do Centro Acadêmico.'), /conta que instalou/);
+  assert.throws(() => e.context.salvarAtividade(e.activity('A', {capacity: 25})), /conta que instalou/);
+  assert.equal(e.context.readJournal_().head, head);
+});
+
+test('Cancelamento revalida sob lock se uma instalação começar após a primeira autorização', () => {
+  const e = environment(); e.begin();
+  const input = e.response('INSCRICAO'); e.context.processFormResponse_('INSCRICAO', input.form, input.response);
+  const head = e.context.readJournal_().head, getLock = e.context.LockService.getScriptLock;
+  const token = Date.now() + '|nova-instalacao';
+  e.context.LockService.getScriptLock = () => {
+    const lock = getLock(), wait = lock.waitLock;
+    lock.waitLock = () => { wait(); e.properties.set('SEMINFO_INSTALL_PENDING', token); };
+    return lock;
+  };
+  assert.throws(() => e.context.cancelarInscricaoAdministrativa('52998224725', 'A', 'Membro do Centro Acadêmico.'), /instalação/);
+  assert.equal(e.context.readJournal_().head, head); assert.equal(e.stats.lockHeld, false);
+  assert.equal(e.properties.get('SEMINFO_INSTALL_PENDING'), token);
+});
+
+test('Mudanças administrativas de Forms e instalação continuam bloqueando decisões e varredura', () => {
+  const e = environment(); e.begin();
+  const input = e.response('INSCRICAO'), before = e.context.readJournal_().operations.length;
+  e.context.withExternalFormOperation_(() => {
+    assert.doesNotMatch(e.properties.get('SEMINFO_FORM_REFRESH_PENDING'), /\|VIEW$/);
+    assert.throws(() => e.context.processFormResponse_('INSCRICAO', input.form, input.response), /atualização dos Forms/);
+    assert.throws(() => e.context.processarSolicitacoesPendentes(), /atualização dos Forms/);
+    assert.throws(() => e.context.refreshFormsSafely_(), /atualização dos Forms/);
+  });
+  e.properties.set('SEMINFO_INSTALL_PENDING', Date.now() + '|install');
+  assert.throws(() => e.context.processFormResponse_('INSCRICAO', input.form, input.response), /instalação/);
+  assert.throws(() => e.context.processarSolicitacoesPendentes(), /instalação/);
+  assert.equal(e.context.readJournal_().operations.length, before);
+  assert.equal(e.stats.lockHeld, false);
+});
+
+test('Marcador interrompido expira sem remover bloqueio ativo de outra execução', () => {
+  const e = environment(); e.begin();
+  const input = e.response('INSCRICAO');
+  const active = Date.now() + '|versao-antiga';
+  e.properties.set('SEMINFO_FORM_REFRESH_PENDING', active);
+  assert.throws(() => e.context.processFormResponse_('INSCRICAO', input.form, input.response), /atualização dos Forms/);
+  assert.equal(e.properties.get('SEMINFO_FORM_REFRESH_PENDING'), active);
+  e.properties.set('SEMINFO_FORM_REFRESH_PENDING', (Date.now() - 481000) + '|interrompida');
+  assert.equal(e.context.processFormResponse_('INSCRICAO', input.form, input.response).code, 'confirmed');
+  assert.equal(e.properties.has('SEMINFO_FORM_REFRESH_PENDING'), false);
+  assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'A'), 1);
+});
+
+test('Revogação do corte após leitura impede confirmação durante atualização visual', () => {
+  const e = environment(); e.begin();
+  const input = e.response('INSCRICAO'), parse = e.context.parseFormRequest_;
+  e.properties.set('SEMINFO_FORM_REFRESH_PENDING', Date.now() + '|refresh|VIEW');
+  e.context.parseFormRequest_ = (...args) => {
+    const request = parse(...args);
+    e.properties.delete('SEMINFO_VERIFIED_SINCE_' + input.form.id);
+    return request;
+  };
+  assert.throws(() => e.context.processFormResponse_('INSCRICAO', input.form, input.response), /quarentena/);
+  assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'A'), 0);
+  assert.equal(e.context.tableRows_('Solicitacoes').length, 0);
+});
+
+test('Confirmações são enviadas durante atualização visual e bloqueadas em configuração administrativa', () => {
+  const e = environment();
+  const sent = [];
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'Notifications.gs'), 'utf8'), e.context);
+  e.context.MailApp.sendEmail = message => sent.push(message);
+  e.begin();
+  const input = e.response('INSCRICAO');
+  const token = Date.now() + '|refresh|VIEW';
+  e.properties.set('SEMINFO_FORM_REFRESH_PENDING', token);
+  e.context.processFormResponse_('INSCRICAO', input.form, input.response);
+  assert.equal(e.context.processarNotificacoes().enviadas, 2, 'confirmação e aviso de última vaga ao CA');
+  assert.equal(sent.filter(message => message.to === 'participante@example.org').length, 1);
+  assert.equal(e.properties.get('SEMINFO_FORM_REFRESH_PENDING'), token);
+  e.properties.delete('SEMINFO_FORM_REFRESH_PENDING');
+  e.context.withExternalFormOperation_(() => {
+    assert.throws(() => e.context.processarNotificacoes(), /atualização dos Forms/);
+  });
 });
 
 test('Liberação do marcador só remove a operação que possui o mesmo token', () => {
@@ -493,10 +692,14 @@ test('Outra conta não pode configurar VERIFIED nem fechar Forms em produção',
 
 test('Atividade lotada sai da inscrição, permanece no cancelamento e retorna após liberação da vaga', () => {
   const e = environment(); e.begin();
+  assert.equal(e.context.tableRows_('Atividades')[0].SITUACAO, 'aberta');
   const input = e.response('INSCRICAO');
   assert.equal(e.context.processFormResponse_('INSCRICAO', input.form, input.response).code, 'confirmed');
   const cancelForm = e.forms.get(e.context.getConfig_().ID_FORM_CANCELAMENTO);
   assert.equal(input.form.accepting, false);
+  assert.equal(e.context.tableRows_('Atividades')[0].SITUACAO, 'lotada');
+  assert.equal(e.context.consultarOcupacao()[0].situacao, 'lotada');
+  assert.equal(e.context.consultarOcupacao()[0].situacaoCadastro, 'aberta');
   assert.equal(e.context.getStoredFormItem_(cancelForm, 'CANCELAMENTO', 'ACTIVITY').choices.some(choice => choice.startsWith('[A] ')), true);
   const stale = e.response('INSCRICAO', { email: 'outra@example.org', answers: { CPF: '11144477735' } });
   assert.equal(e.context.processFormResponse_('INSCRICAO', stale.form, stale.response).code, 'full');
@@ -505,9 +708,40 @@ test('Atividade lotada sai da inscrição, permanece no cancelamento e retorna a
   assert.equal(e.context.processFormResponse_('CANCELAMENTO', cancel.form, cancel.response).code, 'canceled');
   assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'A'), 0);
   assert.equal(input.form.accepting, true);
+  assert.equal(e.context.tableRows_('Atividades')[0].SITUACAO, 'aberta');
+  assert.equal(e.context.consultarOcupacao()[0].situacao, 'aberta');
   assert.equal(e.context.getStoredFormItem_(input.form, 'INSCRICAO', 'ACTIVITY').choices[0].includes('Vagas: 1'), true);
   e.context.encerrarInscricoes();
   assert.equal(input.form.accepting, false); assert.equal(cancelForm.accepting, true);
+  assert.equal(e.context.tableRows_('Atividades')[0].SITUACAO, 'encerrada');
+  assert.equal(e.context.consultarOcupacao()[0].situacao, 'encerrada');
+});
+
+test('Situação de consulta acompanha fechamento global e preserva encerramentos, cancelamentos e pendências do cadastro', () => {
+  const e = environment(); e.begin();
+  const input = e.response('INSCRICAO'); e.context.processFormResponse_('INSCRICAO', input.form, input.response);
+  e.context.salvarAtividade(e.activity('B', {capacity: 25}));
+  e.context.salvarAtividade(e.activity('C', {status: 'encerrada'}));
+  e.context.salvarAtividade(e.activity('D', {status: 'cancelada'}));
+  e.context.salvarAtividade(e.activity('E', {status: 'pendente', capacity: null, start: '', end: ''}));
+  function statuses() { return Object.fromEntries(e.context.tableRows_('Atividades').map(row => [row.ID, row.SITUACAO])); }
+  const open = {A: 'lotada', B: 'aberta', C: 'encerrada', D: 'cancelada', E: 'pendente'};
+  assert.deepEqual(statuses(), open);
+  e.context.encerrarInscricoes();
+  assert.deepEqual(statuses(), {...open, A: 'encerrada', B: 'encerrada'});
+  assert.deepEqual(Object.fromEntries(Array.from(e.context.consultarOcupacao(), row => [row.id, row.situacao])), statuses());
+  e.context.abrirInscricoes();
+  assert.deepEqual(statuses(), open);
+  const head = e.context.readJournal_().head;
+  e.context.withLock_(() => e.context.rebuildViewsLocked_(e.context.readJournal_()));
+  assert.deepEqual(statuses(), open);
+  assert.equal(e.context.readJournal_().head, head, 'recalcular situação não grava mudança no catálogo');
+  assert.equal(e.context.readState_().activities.A.status, 'aberta');
+  e.context.salvarAtividade(e.activity('A', {status: 'encerrada'}));
+  assert.equal(statuses().A, 'encerrada', 'fechamento administrativo prevalece sobre a lotação');
+  const cancel = e.response('CANCELAMENTO'); e.context.processFormResponse_('CANCELAMENTO', cancel.form, cancel.response);
+  assert.equal(statuses().A, 'encerrada', 'vaga liberada não desfaz fechamento administrativo');
+  assert.equal(e.context.consultarOcupacao().find(row => row.id === 'A').ocupacao, 0);
 });
 
 test('Rótulo antigo resolve ID permanente, e identidade vem exclusivamente do e-mail nativo', () => {
@@ -615,6 +849,252 @@ test('Conferência rejeita um único gatilho com formulário ou evento errado at
     assert.equal(e.triggers.length, 3);
     assert.equal(e.context.conferirSistema().forms.length, 2);
   }
+});
+
+test('Consulta isolada de cota funciona com Forms inacessíveis, gatilhos ausentes e instalação interrompida', () => {
+  const e = environment(); e.begin();
+  e.triggers.splice(0);
+  e.properties.set('SEMINFO_INSTALL_PENDING', Date.now() + '|interrompida');
+  e.properties.set('SEMINFO_RESET_PENDING', '{"phase":"backup"}');
+  const snapshots = JSON.stringify({properties: [...e.properties], sheets: [...e.sheets].map(([name, sheet]) => [name, sheet.cells])});
+  e.context.FormApp.openById = () => { throw new Error('Forms indisponível'); };
+  e.context.getConfig_ = () => { throw new Error('Configuração indisponível'); };
+  e.context.ScriptApp.getProjectTriggers = () => { throw new Error('Gatilhos indisponíveis'); };
+  e.context.console = {log: () => {}};
+  e.context.MailApp.getRemainingDailyQuota = () => 0;
+  const exhausted = e.context.consultarCotaEmails();
+  assert.equal(exhausted.destinatariosRestantes, 0);
+  assert.equal(exhausted.cotaEsgotada, true);
+  e.context.MailApp.getRemainingDailyQuota = () => 37;
+  const available = e.context.consultarCotaEmails();
+  assert.equal(available.destinatariosRestantes, 37);
+  assert.equal(available.cotaEsgotada, false);
+  assert.ok(Number.isFinite(Date.parse(available.consultadaEm)));
+  assert.equal(JSON.stringify({properties: [...e.properties], sheets: [...e.sheets].map(([name, sheet]) => [name, sheet.cells])}), snapshots);
+});
+
+test('Consulta isolada de cota e reparo continuam exclusivos da conta instaladora', () => {
+  const e = environment();
+  assert.throws(() => e.context.consultarCotaEmails(), /conta que instalou/);
+  assert.throws(() => e.context.repararGatilhos(), /conta que instalou/);
+  e.installed();
+  e.context.Session.getEffectiveUser = () => ({getEmail: () => 'outra@example.org'});
+  e.context.MailApp.getRemainingDailyQuota = () => { assert.fail('não deve consultar a cota de outra conta'); };
+  assert.throws(() => e.context.consultarCotaEmails(), /conta que instalou/);
+  assert.throws(() => e.context.repararGatilhos(), /conta que instalou/);
+});
+
+test('Reparo recupera gatilhos de muitos Forms sem abri-los, preserva dados e gatilhos externos', () => {
+  const e = environment(), entries = Array.from({length: 13}, () => e.manualRegistration('A'));
+  e.configureExisting(entries); e.installed();
+  e.context.salvarAtividade(e.activity()); e.context.abrirInscricoes();
+  const input = e.responseFrom(entries[0]); e.context.processFormResponse_('INSCRICAO', input.form, input.response);
+  const external = {getHandlerFunction: () => 'outraAutomacao', getEventType: () => 'CLOCK', getTriggerSourceId: () => ''};
+  e.triggers.push(external);
+  e.triggers.splice(e.triggers.findIndex(trigger => trigger.getHandlerFunction() === 'manutencaoPeriodica'), 1);
+  e.triggers.push({getHandlerFunction: () => 'aoEnviarInscricao', getEventType: () => 'ON_FORM_SUBMIT', getTriggerSourceId: () => 'OUTRO_FORM'});
+  const original = e.triggers.find(trigger => trigger.getHandlerFunction() === 'aoEnviarInscricao');
+  e.triggers.push({...original});
+  const snapshot = JSON.stringify({properties: [...e.properties], sheets: [...e.sheets].map(([name, sheet]) => [name, sheet.cells]),
+    forms: [...e.forms.values()], queueSyncs: e.stats.queueSyncs});
+  e.context.FormApp.openById = () => { assert.fail('reparo não deve abrir Forms'); };
+  e.context.setupForms_ = e.context.rebuildViewsLocked_ = e.context.refreshFormsLocked_ = () => { assert.fail('reparo não deve reinstalar'); };
+  e.context.console = {log: () => {}};
+  const result = e.context.repararGatilhos();
+  assert.equal(result.criados, 1); assert.equal(result.removidos, 2); assert.equal(result.total, 15);
+  assert.equal(e.triggers.length, 16); assert.ok(e.triggers.includes(external));
+  assert.equal(e.stats.lockHeld, false);
+  assert.equal(JSON.stringify({properties: [...e.properties], sheets: [...e.sheets].map(([name, sheet]) => [name, sheet.cells]),
+    forms: [...e.forms.values()], queueSyncs: e.stats.queueSyncs}), snapshot);
+  const again = e.context.repararGatilhos();
+  assert.equal(again.criados, 0); assert.equal(again.removidos, 0); assert.equal(again.mantidos, 15);
+});
+
+test('Reparo respeita instalação, limpeza e atualização administrativa ativas, mas permite projeção VIEW', () => {
+  const e = environment(); e.installed(); e.context.console = {log: () => {}};
+  for (const [key, value] of [
+    ['SEMINFO_INSTALL_PENDING', Date.now() + '|install'],
+    ['SEMINFO_FORM_REFRESH_PENDING', Date.now() + '|admin'],
+    ['SEMINFO_RESET_PENDING', '{"phase":"backup"}']
+  ]) {
+    e.properties.set(key, value);
+    assert.throws(() => e.context.repararGatilhos(), /andamento|interrompida/);
+    assert.equal(e.triggers.length, 3);
+    e.properties.delete(key);
+  }
+  const token = Date.now() + '|routine|VIEW'; e.properties.set('SEMINFO_FORM_REFRESH_PENDING', token);
+  e.triggers.splice(0);
+  assert.equal(e.context.repararGatilhos().criados, 3);
+  assert.equal(e.properties.get('SEMINFO_FORM_REFRESH_PENDING'), token);
+});
+
+test('Reparo recusa Form com instalação incompleta antes de alterar gatilhos', () => {
+  const e = environment(), entry = e.manualRegistration('A');
+  e.configureExisting([entry]); e.installed();
+  const next = e.manualRegistration('B');
+  e.context.setConfig_('FORMULARIOS_INSCRICAO_JSON', JSON.stringify([entry.definition, next.definition]));
+  const before = [...e.triggers], created = e.stats.triggersCreated;
+  assert.throws(() => e.context.repararGatilhos(), /instalação.*incompleta/);
+  assert.deepEqual(e.triggers, before); assert.equal(e.stats.triggersCreated, created);
+  assert.equal(e.stats.lockHeld, false);
+});
+
+test('Falha durante criação de gatilhos libera lock e nova tentativa completa apenas os ausentes', () => {
+  const e = environment(); e.installed(); e.triggers.splice(0); e.context.console = {log: () => {}};
+  const create = e.context.ScriptApp.newTrigger; let calls = 0;
+  e.context.ScriptApp.newTrigger = handler => {
+    if (++calls === 2) throw new Error('Falha simulada no serviço de gatilhos');
+    return create(handler);
+  };
+  assert.throws(() => e.context.repararGatilhos(), /Falha simulada/);
+  assert.equal(e.stats.lockHeld, false); assert.equal(e.triggers.length, 1);
+  e.context.ScriptApp.newTrigger = create;
+  const result = e.context.repararGatilhos();
+  assert.equal(result.criados, 2); assert.equal(result.mantidos, 1);
+  assert.equal(e.triggers.length, 3);
+});
+
+function reassessmentEnvironment(confirmed = 21, refused = 6, realNotifications = false) {
+  const e = environment(); e.context.console = {log: () => {}, error: () => {}};
+  if (realNotifications) vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'Notifications.gs'), 'utf8'), e.context);
+  e.installed(); e.context.salvarAtividade(e.activity('A', {capacity: 30})); e.context.abrirInscricoes();
+  function cpfFor(index) {
+    const digits = String(100000000 + index).split('').map(Number);
+    for (let length = 9; length < 11; length++) {
+      const remainder = digits.reduce((sum, digit, i) => sum + digit * (length + 1 - i), 0) % 11;
+      digits.push(remainder < 2 ? 0 : 11 - remainder);
+    }
+    return digits.join('');
+  }
+  let sequence = 0;
+  function submit(index, changes = {}) {
+    const input = e.response('INSCRICAO', {timestamp: new Date(Date.now() + 10000 + (++sequence) * 1000),
+      email: changes.email || 'pessoa' + index + '@example.org',
+      answers: {CPF: cpfFor(index), NAME: 'Pessoa ' + index, ...changes.answers}});
+    return {...input, result: e.context.processFormResponse_('INSCRICAO', input.form, input.response, true)};
+  }
+  for (let index = 1; index <= confirmed; index++) assert.equal(submit(index).result.code, 'confirmed');
+  e.context.salvarAtividade(e.activity('A', {capacity: 30, status: 'encerrada'}));
+  const rejected = [];
+  for (let index = confirmed + 1; index <= confirmed + refused; index++) {
+    const input = submit(index); assert.equal(input.result.code, 'closed'); rejected.push(input);
+  }
+  return {...e, submit, cpfFor, rejected};
+}
+
+test('Prévia reavalia recusas em ordem de envio e prevê somente quatro vagas até 25, sem gravar decisões', () => {
+  const e = reassessmentEnvironment(), before = e.context.readJournal_(), syncs = e.stats.queueSyncs;
+  const preview = e.context.prepararReavaliacaoInscricoes('A', 25);
+  assert.equal(preview.ocupacaoAtual, 21); assert.equal(preview.novasConfirmacoes, 4);
+  assert.equal(preview.ocupacaoPrevista, 25); assert.equal(preview.vagasRestantes, 0);
+  assert.equal(preview.resultados.ja_confirmada, 21); assert.equal(preview.resultados.full, 2);
+  assert.deepEqual(Array.from(preview.solicitacoes.filter(row => row.resultadoPrevisto === 'confirmed'), row => row.nome),
+    ['Pessoa 22', 'Pessoa 23', 'Pessoa 24', 'Pessoa 25']);
+  assert.equal(e.context.readJournal_().head, before.head); assert.equal(e.stats.queueSyncs, syncs);
+  assert.equal(e.context.readState_().activities.A.capacity, 30);
+  assert.equal(e.context.programacaoSeminfo2026_().find(activity => activity.id === 'OFICINA_IA_ALEM_CHAT').capacity, 25);
+});
+
+test('Confirmação limita a 25, mantém Form fechado, audita origem e cria só os quatro novos avisos', () => {
+  const e = reassessmentEnvironment(21, 6, true), sent = [];
+  e.context.MailApp.sendEmail = message => sent.push(message);
+  e.context.FormApp.openById = () => { assert.fail('reavaliação não deve reconfigurar Forms'); };
+  const preview = e.context.prepararReavaliacaoInscricoes('A', 25);
+  const result = e.context.confirmarReavaliacaoInscricoes('A', 25, preview.token, 'Correção de capacidade e reavaliação autorizada.');
+  assert.equal(result.ocupacao, 25); assert.equal(result.novasConfirmacoes, 4); assert.equal(result.situacao, 'encerrada');
+  const journal = e.context.readJournal_(), revised = journal.operations.filter(operation => operation.reassessmentOf);
+  assert.equal(revised.length, 4); assert.equal(journal.state.accepting, true);
+  for (const operation of revised) {
+    assert.equal(journal.byKey[operation.reassessmentOf].outcome.code, 'closed');
+    assert.equal(operation.request.authorizeSwap, false); assert.equal(operation.reassessedBy, 'ca@example.org');
+    assert.equal(operation.outcome.changes.length, 1); assert.equal(operation.outcome.changes[0].type, 'CONFIRM');
+    assert.equal(operation.outcome.changes[0].registration.activity.capacity, 25);
+  }
+  const queue = e.context.tableRows_('FilaEmails');
+  assert.equal(queue.filter(row => revised.some(operation => row.ID === 'MAIL:' + operation.key)).length, 4);
+  assert.equal(queue.filter(row => row.ID.startsWith('MAIL:CAPACIDADE:')).length, 1);
+  assert.equal(e.forms.get(e.context.getConfig_().ID_FORM_INSCRICAO).accepting, false);
+  assert.equal(sent.length, 0);
+  const again = e.context.prepararReavaliacaoInscricoes('A', 25), head = journal.head;
+  assert.equal(again.novasConfirmacoes, 0);
+  e.context.confirmarReavaliacaoInscricoes('A', 25, again.token, 'Repetição da conferência administrativa.');
+  assert.equal(e.context.readJournal_().head, head);
+  assert.equal(e.context.tableRows_('FilaEmails').length, queue.length);
+});
+
+test('Reavaliação preserva cancelamentos, trocas, escolhas posteriores e recusas de identidade', () => {
+  const e = reassessmentEnvironment(2, 0);
+  e.context.cancelarInscricaoAdministrativa(e.cpfFor(1), 'A', 'Membro da organização.');
+  e.submit(1); // Nova recusa por fechamento não anula o cancelamento.
+  e.context.salvarAtividade(e.activity('B', {capacity: 10}));
+  assert.equal(e.submit(2, {answers: {ACTIVITY: '[B] Atividade B', SWAP: e.context.SEMINFO_FORM_TEXT_.SWAP_YES}}).result.code, 'swapped');
+  e.submit(3);
+  assert.equal(e.submit(3, {answers: {ACTIVITY: '[B] Atividade B'}}).result.code, 'confirmed');
+  assert.equal(e.submit(4, {answers: {ACTIVITY: '[B] Atividade B'}}).result.code, 'confirmed');
+  assert.equal(e.submit(4, {email: 'outra-pessoa@example.org'}).result.code, 'identity_mismatch');
+  e.submit(5);
+  const preview = e.context.prepararReavaliacaoInscricoes('A', 25);
+  assert.equal(preview.novasConfirmacoes, 1);
+  assert.equal(preview.resultados.cancelada_ou_trocada, 2);
+  assert.equal(preview.resultados.conflict, 1); assert.equal(preview.resultados.outra_recusa, 1);
+  e.context.confirmarReavaliacaoInscricoes('A', 25, preview.token, 'Conferência das solicitações recusadas.');
+  const state = e.context.readState_();
+  assert.equal(e.context.SemDomain.occupancy(state, 'A'), 1);
+  assert.equal(e.context.SemDomain.occupancy(state, 'B'), 3);
+  assert.equal(e.context.SemDomain.confirmedFor(state, e.cpfFor(1)).length, 0);
+});
+
+test('Reavaliação recusa prévia desatualizada, capacidade abaixo da ocupação, outra conta e atividade aberta', () => {
+  const e = reassessmentEnvironment(2, 1), head = e.context.readJournal_().head;
+  assert.throws(() => e.context.prepararReavaliacaoInscricoes('A', 1), /Capacidade/);
+  assert.equal(e.context.readJournal_().head, head);
+  let preview = e.context.prepararReavaliacaoInscricoes('A', 25);
+  assert.throws(() => e.context.confirmarReavaliacaoInscricoes('A', 25, 'outro-token', 'Conferência administrativa.'), /mudaram/);
+  e.context.setConfig_('EMAIL_CA', 'novo@example.org'); // Mudança de endereço de atendimento não decide vagas.
+  e.context.salvarAtividade(e.activity('B'));
+  assert.throws(() => e.context.confirmarReavaliacaoInscricoes('A', 25, preview.token, 'Conferência administrativa.'), /mudaram/);
+  preview = e.context.prepararReavaliacaoInscricoes('A', 25);
+  e.properties.set('SEMINFO_VERIFIED_SINCE_' + e.context.getConfig_().ID_FORM_INSCRICAO, new Date(Date.now() + 86400000).toISOString());
+  assert.throws(() => e.context.confirmarReavaliacaoInscricoes('A', 25, preview.token, 'Conferência administrativa.'), /mudaram/);
+  assert.equal(e.context.prepararReavaliacaoInscricoes('A', 25).novasConfirmacoes, 0);
+  assert.equal(e.context.readState_().activities.A.capacity, 30);
+  e.context.Session.getEffectiveUser = () => ({getEmail: () => 'outra@example.org'});
+  assert.throws(() => e.context.prepararReavaliacaoInscricoes('A', 25), /conta que instalou/);
+  assert.throws(() => e.context.confirmarReavaliacaoInscricoes('A', 25, preview.token, 'Conferência administrativa.'), /conta que instalou/);
+  e.context.Session.getEffectiveUser = () => ({getEmail: () => 'ca@example.org'});
+  e.context.salvarAtividade(e.activity('A', {capacity: 30}));
+  assert.throws(() => e.context.prepararReavaliacaoInscricoes('A', 25), /encerrada/);
+});
+
+test('Reavaliação usa só a última solicitação por CPF e mantém respostas anteriores ao corte fora da decisão', () => {
+  const e = reassessmentEnvironment(0, 1);
+  e.submit(1); e.submit(2);
+  let preview = e.context.prepararReavaliacaoInscricoes('A', 25);
+  assert.equal(preview.novasConfirmacoes, 2); assert.equal(preview.solicitacoes.length, 2);
+  const id = e.context.getConfig_().ID_FORM_INSCRICAO;
+  e.properties.delete('SEMINFO_VERIFIED_SINCE_' + id);
+  preview = e.context.prepararReavaliacaoInscricoes('A', 25);
+  assert.equal(preview.novasConfirmacoes, 0); assert.equal(preview.resultados.origem_nao_elegivel, 2);
+});
+
+test('Interrupção após gravar uma reavaliação retoma em nova prévia sem duplicar inscrição', () => {
+  const e = reassessmentEnvironment(21, 4), commit = e.context.commitOperationLocked_;
+  const preview = e.context.prepararReavaliacaoInscricoes('A', 25);
+  e.context.commitOperationLocked_ = (journal, operation) => {
+    const saved = commit(journal, operation);
+    if (operation.reassessmentOf) throw new Error('Interrupção após gravação');
+    return saved;
+  };
+  assert.throws(() => e.context.confirmarReavaliacaoInscricoes('A', 25, preview.token, 'Conferência administrativa.'), /Interrupção/);
+  assert.equal(e.stats.lockHeld, false);
+  assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'A'), 22);
+  e.context.commitOperationLocked_ = commit;
+  const resumed = e.context.prepararReavaliacaoInscricoes('A', 25);
+  assert.equal(resumed.novasConfirmacoes, 3);
+  e.context.confirmarReavaliacaoInscricoes('A', 25, resumed.token, 'Retomada da conferência administrativa.');
+  const journal = e.context.readJournal_();
+  assert.equal(e.context.SemDomain.occupancy(journal.state, 'A'), 25);
+  assert.equal(journal.operations.filter(operation => operation.reassessmentOf).length, 4);
 });
 
 test('Gatilho compartilha prazo global com as notificações, inclusive quando o processamento falha', () => {
@@ -1542,6 +2022,23 @@ test('Uma equipe confirmada bloqueia conflito individual sem permitir troca que 
   assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'CSP_2026'), 1);
 });
 
+test('Situação da CSP usa vagas de equipes e volta a aberta após cancelamento de uma equipe', () => {
+  const e = teamCspEnvironment(2);
+  e.context.abrirInscricoes();
+  const first = e.teamResponse('Alpha', ['Coach Alpha - 52998224725', 'Integrante Alpha - 11144477735', 'Integrante Beta - 01234567890']);
+  e.context.prepararImportacaoCsp(); e.context.importarInscricoesAnterioresCsp();
+  function row() { return e.context.tableRows_('Atividades').find(activity => activity.ID === 'CSP_2026'); }
+  assert.equal(e.context.tableRows_('IntegrantesEquipes').length, 3);
+  assert.equal(row().OCUPACAO, 1); assert.equal(row().SITUACAO, 'aberta');
+  e.teamResponse('Beta', ['Coach Beta - 12345678909']);
+  e.context.prepararImportacaoCsp(); e.context.importarInscricoesAnterioresCsp();
+  assert.equal(row().OCUPACAO, 2); assert.equal(row().SITUACAO, 'lotada');
+  assert.equal(e.context.consultarOcupacao().find(activity => activity.id === 'CSP_2026').situacao, 'lotada');
+  assert.equal(e.context.readState_().activities.CSP_2026.status, 'aberta');
+  e.context.cancelarEquipeCsp(e.form.id + ':' + first.getId() + ':equipe', 'Cancelamento administrativo de teste');
+  assert.equal(row().OCUPACAO, 1); assert.equal(row().SITUACAO, 'aberta');
+});
+
 test('Cancelamento administrativo libera uma vaga de equipe, preserva integrantes e exclui da exportação confirmada', () => {
   const e = teamCspEnvironment(1);
   const response = e.teamResponse('Alpha', ['Coach Alpha - 52998224725', 'Integrante Alpha - 11144477735']);
@@ -2320,6 +2817,185 @@ test('Relatorio CSP mostra motivos de equipes nao confirmadas mesmo em uma segun
  assert.equal(e.context.importarInscricoesAnterioresCsp().equipesNaoConfirmadas[0].resultado, 'full');
 });
 
+
+function meetsEnvironment() {
+  const e = environment();
+  e.installed();
+  const events = new Map(), inserted = [], patched = [], logs = [];
+  const copy = value => JSON.parse(JSON.stringify(value));
+  const apiError = code => Object.assign(new Error(code === 404 ? 'Not Found' : 'Calendar API indisponível'), {code});
+  e.context.console = {log: text => logs.push(text)};
+  e.context.Calendar = {Events: {
+    get(calendar, id) {
+      assert.equal(calendar, 'primary');
+      if (!events.has(id)) throw apiError(404);
+      return copy(events.get(id));
+    },
+    insert(resource, calendar, args) {
+      assert.equal(calendar, 'primary');
+      assert.equal(args.conferenceDataVersion, 1);
+      assert.equal(args.sendUpdates, 'none');
+      assert.equal(resource.conferenceData.createRequest.conferenceSolutionKey.type, 'hangoutsMeet');
+      assert.match(resource.id, /^[a-v0-9]{5,1024}$/);
+      assert.ok(!events.has(resource.id));
+      assert.equal(resource.attendees, undefined);
+      const event = {...copy(resource), status: 'confirmed',
+        htmlLink: 'https://calendar.google.com/event?eid=' + resource.id,
+        hangoutLink: 'https://meet.google.com/' + resource.id};
+      inserted.push(copy(resource));
+      events.set(event.id, event);
+      return copy(event);
+    },
+    patch(resource, calendar, id, args) {
+      assert.equal(calendar, 'primary');
+      assert.equal(args.conferenceDataVersion, 1);
+      assert.deepEqual(Object.keys(resource), resource.conferenceData ? ['conferenceData'] : ['start', 'end']);
+      patched.push(copy(resource));
+      const event = events.get(id);
+      Object.assign(event, copy(resource));
+      if (resource.conferenceData) event.hangoutLink = 'https://meet.google.com/' + id;
+      return copy(event);
+    }
+  }};
+  return {...e, events, inserted, patched, logs, apiError};
+}
+
+test('Meets reserva das 19h às 22h nas três datas, grava links e reaproveita os eventos', () => {
+  const e = meetsEnvironment();
+  const report = e.context.criarMeetsSeminfo2026();
+  assert.deepEqual(Array.from(report, row => row.ATIVIDADE_ID), ['NOITE_26', 'PALESTRA_DANIELE', 'PALESTRA_JOHNATAN']);
+  assert.deepEqual(e.inserted.map(event => event.start.dateTime), [
+    '2026-10-26T19:00:00-03:00', '2026-10-28T19:00:00-03:00', '2026-10-29T19:00:00-03:00']);
+  assert.deepEqual(e.inserted.map(event => event.end.dateTime), [
+    '2026-10-27T01:00:00.000Z', '2026-10-29T01:00:00.000Z', '2026-10-30T01:00:00.000Z']);
+  for (const event of e.inserted) {
+    assert.equal(Date.parse(event.end.dateTime) - Date.parse(event.start.dateTime), 10800000);
+    assert.equal(event.start.timeZone, 'America/Sao_Paulo');
+    assert.equal(event.end.timeZone, 'America/Sao_Paulo');
+  }
+  assert.equal(new Set(e.inserted.map(event => event.conferenceData.createRequest.requestId)).size, 3);
+  assert.equal(e.context.tableRows_('Meets').length, 3);
+  assert.ok(report.every(row => row.SITUACAO === 'PRONTO' && row.MEET));
+  const again = e.context.criarMeetsSeminfo2026();
+  assert.equal(e.inserted.length, 3);
+  assert.equal(e.patched.length, 0);
+  assert.equal(again[0].TERMINO, report[0].TERMINO);
+  assert.equal(again[0].MEET, report[0].MEET);
+  assert.equal(e.stats.lockHeld, false);
+});
+
+test('Meets antecipa eventos existentes das 19h30 para as 19h mantendo links e outros dados', () => {
+  const e = meetsEnvironment(), original = e.context.criarMeetsSeminfo2026();
+  for (const resource of e.inserted.slice(1)) {
+    const event = e.events.get(resource.id);
+    event.start.dateTime = event.start.dateTime.replace('19:00', '19:30');
+    event.end.dateTime = event.end.dateTime.replace('01:00', '01:30');
+    event.description = 'Descrição editada pela organização';
+  }
+  const updated = e.context.criarMeetsSeminfo2026();
+  assert.equal(e.inserted.length, 3);
+  assert.equal(e.patched.length, 2);
+  for (let index = 0; index < updated.length; index++) {
+    assert.equal(updated[index].MEET, original[index].MEET);
+    assert.equal(updated[index].INICIO, original[index].INICIO);
+    assert.equal(updated[index].TERMINO, original[index].TERMINO);
+  }
+  for (const resource of e.inserted.slice(1)) {
+    const event = e.events.get(resource.id);
+    assert.equal(event.description, 'Descrição editada pela organização');
+    assert.equal(event.conferenceData.createRequest.requestId, resource.conferenceData.createRequest.requestId);
+  }
+  e.context.criarMeetsSeminfo2026();
+  assert.equal(e.patched.length, 2);
+  assert.equal(e.context.tableRows_('Meets')[1].INICIO, original[1].INICIO);
+});
+
+test('Meets consulta geração assíncrona e sinaliza pendência sem emitir novos pedidos', () => {
+  const e = meetsEnvironment();
+  e.context.criarMeetsSeminfo2026();
+  const event = e.events.get(e.inserted[0].id);
+  delete event.hangoutLink;
+  event.conferenceData.createRequest.status = {statusCode: 'pending'};
+  const pending = e.context.criarMeetsSeminfo2026();
+  assert.match(pending[0].SITUACAO, /^PENDENTE:/);
+  assert.equal(pending[0].MEET, '');
+  assert.equal(e.patched.length, 0);
+  let sleeps = 0;
+  e.context.Utilities.sleep = () => {
+    if (++sleeps === 2) event.conferenceData.entryPoints = [{entryPointType: 'video', uri: 'https://meet.google.com/abc-defg-hij'}];
+  };
+  const ready = e.context.criarMeetsSeminfo2026();
+  assert.equal(ready[0].MEET, 'https://meet.google.com/abc-defg-hij');
+  assert.equal(ready[0].SITUACAO, 'PRONTO');
+  assert.equal(e.inserted.length, 3);
+});
+
+test('Meets retoma resposta perdida após criação sem duplicar eventos', () => {
+  const e = meetsEnvironment(), insert = e.context.Calendar.Events.insert;
+  let interrupted = false;
+  e.context.Calendar.Events.insert = (...args) => {
+    const event = insert(...args);
+    if (!interrupted) { interrupted = true; throw e.apiError(503); }
+    return event;
+  };
+  assert.throws(() => e.context.criarMeetsSeminfo2026(), /Consulte a aba Meets/);
+  assert.equal(e.events.size, 3);
+  assert.equal(e.context.tableRows_('Meets').filter(row => row.SITUACAO === 'PRONTO').length, 2);
+  assert.ok(e.context.criarMeetsSeminfo2026().every(row => row.SITUACAO === 'PRONTO'));
+  assert.equal(e.inserted.length, 3);
+});
+
+test('Meets refaz somente a conferência que falhou usando novo requestId', () => {
+  const e = meetsEnvironment();
+  e.context.criarMeetsSeminfo2026();
+  const event = e.events.get(e.inserted[0].id), oldRequest = event.conferenceData.createRequest.requestId;
+  delete event.hangoutLink;
+  event.conferenceData.createRequest.status = {statusCode: 'failure'};
+  const patch = e.context.Calendar.Events.patch;
+  e.context.Calendar.Events.patch = () => JSON.parse(JSON.stringify(event));
+  assert.throws(() => e.context.criarMeetsSeminfo2026(), /Há falhas/);
+  assert.match(e.context.tableRows_('Meets')[0].SITUACAO, /^ERRO:/);
+  e.context.Calendar.Events.patch = patch;
+  assert.ok(e.context.criarMeetsSeminfo2026().every(row => row.SITUACAO === 'PRONTO'));
+  assert.equal(e.patched.length, 1);
+  assert.notEqual(event.conferenceData.createRequest.requestId, oldRequest);
+  assert.equal(e.inserted.length, 3);
+});
+
+test('Meets não interpreta falha de permissão como evento ausente e libera o bloqueio', () => {
+  const e = meetsEnvironment();
+  e.context.Calendar.Events.get = () => { throw e.apiError(403); };
+  assert.throws(() => e.context.criarMeetsSeminfo2026(), /Há falhas/);
+  assert.equal(e.inserted.length, 0);
+  assert.ok(e.context.tableRows_('Meets').every(row => row.SITUACAO.startsWith('ERRO:')));
+  assert.equal(e.stats.lockHeld, false);
+});
+
+test('Meets recusa outra conta, serviço desativado e evento excluído sem recriar', () => {
+  const e = meetsEnvironment();
+  e.properties.set('SEMINFO_INSTALLER', 'outra@example.org');
+  assert.throws(() => e.context.criarMeetsSeminfo2026(), /conta que instalou/);
+  e.properties.set('SEMINFO_INSTALLER', 'ca@example.org');
+  const calendar = e.context.Calendar;
+  delete e.context.Calendar;
+  assert.throws(() => e.context.criarMeetsSeminfo2026(), /Habilite o serviço Google Calendar/);
+  e.context.Calendar = calendar;
+  e.context.criarMeetsSeminfo2026();
+  e.events.get(e.inserted[0].id).status = 'cancelled';
+  assert.throws(() => e.context.criarMeetsSeminfo2026(), /Há falhas/);
+  assert.match(e.context.tableRows_('Meets')[0].SITUACAO, /excluído/);
+  assert.equal(e.inserted.length, 3);
+});
+
+test('Meets recupera conflito de ID após criação concorrente sem novo evento', () => {
+  const e = meetsEnvironment(), insert = e.context.Calendar.Events.insert;
+  e.context.Calendar.Events.insert = (...args) => {
+    insert(...args);
+    throw Object.assign(new Error('The requested identifier already exists'), {code: 409});
+  };
+  assert.ok(e.context.criarMeetsSeminfo2026().every(row => row.SITUACAO === 'PRONTO'));
+  assert.equal(e.inserted.length, 3);
+});
 
 test('Recuperacao da lista antiga completa as 13 equipes com as cinco ausentes sem duplicar', () => {
  const e = teamCspEnvironment(60);

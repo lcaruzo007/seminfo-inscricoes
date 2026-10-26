@@ -51,10 +51,19 @@ function commitOperationLocked_(journal, operation) {
   return persisted;
 }
 
+/** Situação das inscrições exibida nas consultas; não altera o cadastro oficial. */
+function activityRegistrationStatus_(state, activity, occupied) {
+  if (activity.status !== 'aberta') return activity.status;
+  if (!state.accepting) return 'encerrada';
+  return occupied >= Number(activity.capacity) ? 'lotada' : 'aberta';
+}
+
 function rebuildViewsLocked_(journal) {
   var state = journal.state;
   writeTable_('Atividades', SEMINFO_TABLES.Atividades, Object.values(state.activities).map(function(a) {
-    return [a.id, a.title, a.type, a.description, a.instructor, a.location, a.start, a.end, a.capacity === null ? '' : a.capacity, a.status, SemDomain.occupancy(state, a.id)];
+    var occupied = SemDomain.occupancy(state, a.id);
+    return [a.id, a.title, a.type, a.description, a.instructor, a.location, a.start, a.end, a.capacity === null ? '' : a.capacity,
+      activityRegistrationStatus_(state, a, occupied), occupied];
   }));
   writeTable_('Participantes', SEMINFO_TABLES.Participantes, Object.values(state.participants).map(function(p) { return [p.cpf, p.name, p.email]; }));
   writeTable_('Solicitacoes', SEMINFO_TABLES.Solicitacoes, journal.operations.filter(function(op) { return op.kind === 'REQUEST'; }).map(function(op) {
@@ -110,14 +119,16 @@ function processFormResponse_(kind, form, response, deferViews) {
       var journal = readJournal_();
       var resetAt = props_().getProperty('SEMINFO_RESET_AT');
       if (resetAt && Date.parse(request.submittedAt) <= Date.parse(resetAt)) throw new Error('Resposta anterior à limpeza; envie novamente após a abertura.');
-      if (!journal.byKey[request.key]) {
+      // A verificação externa pode ter revogado o corte enquanto a resposta era lida.
+      if (!isEligibleFormResponse_(form, response)) throw new Error('Resposta em quarentena: a abertura verificada deste formulário foi revogada ou alterada.');
+      var operation = journal.byKey[request.key];
+      if (!operation) {
         var outcome = enrichOutcome_(journal.state, request, SemDomain.decide(journal.state, request));
-        commitOperationLocked_(journal, {key: request.key, kind: 'REQUEST', at: new Date().toISOString(), request: request, outcome: outcome});
-        journal = readJournal_();
+        operation = commitOperationLocked_(journal, {key: request.key, kind: 'REQUEST', at: new Date().toISOString(), request: request, outcome: outcome});
       }
-      if (deferViews !== true) rebuildViewsLocked_(journal);
-      return journal.byKey[request.key].outcome;
-    });
+      return operation.outcome;
+    }, false, false, true);
+    // A sincronização reconstrói as visões uma única vez, com o estado mais recente.
     if (deferViews !== true) refreshFormsSafely_();
     return outcome;
   } catch (error) {
@@ -132,7 +143,7 @@ function processFormResponse_(kind, form, response, deferViews) {
           var completed = false;
           try { completed = Boolean(readJournal_().byKey[key]); } catch (_) { /* Estado oficial indeterminado exige atendimento. */ }
           if (failures.length >= 3 && !completed) syncNotificationQueueLocked_([{key: 'FALHA:' + key, kind: 'REQUEST', at: new Date().toISOString(), request: request, outcome: {code: 'failure', changes: []}}]);
-        });
+        }, false, false, true);
       } catch (_) { /* O Forms continua sendo a caixa de entrada durável. */ }
     }
     throw error;
@@ -146,7 +157,7 @@ function postProcessing_(deadline) {
 
 /** Varredura completa da caixa de entrada dos dois Forms; nenhum cursor pode pular respostas. */
 function processarSolicitacoesPendentes(deadline) {
-  requireInstaller_();
+  requireInstaller_(false, true);
   var config = getConfig_(), started = Date.now(), pending = [], quarantined = 0, processed = readJournal_().byKey;
   var executionDeadline = Math.min(started + 210000, Number(deadline) || Infinity);
   var sources = getFormSources_(), cursor = Number(props_().getProperty('SEMINFO_SCAN_FORM_INDEX') || 0), scanned = 0, scanErrors = 0;
@@ -186,16 +197,20 @@ function processarSolicitacoesPendentes(deadline) {
 function refreshFormsSafely_() {
   var refreshLock = LockService.getScriptLock();
   refreshLock.waitLock(getConfig_().TEMPO_LOCK_MS);
-  var token = pendingOperationToken_();
-  var journal;
+  var token = pendingOperationToken_() + '|VIEW';
+  var journal, deferred = false;
   try {
     assertNoReset_();
-    assertNoPendingOperation_();
+    assertNoPendingOperation_(true);
     journal = readJournal_();
     rebuildViewsLocked_(journal);
-    props_().setProperty('SEMINFO_FORM_REFRESH_PENDING', token);
+    if (props_().getProperty('SEMINFO_FORM_REFRESH_PENDING')) deferred = true;
+    else props_().setProperty('SEMINFO_FORM_REFRESH_PENDING', token);
   } finally { try { SpreadsheetApp.flush(); } finally { refreshLock.releaseLock(); } }
 
+  // Outra execução já atualiza as opções. As visões e a fila acima estão atuais;
+  // a manutenção periódica reaplica as opções com as decisões mais recentes.
+  if (deferred) return {adiada: true, motivo: 'Atualização das opções já em andamento.'};
   var refreshResult, refreshError;
   try { refreshResult = refreshFormsLocked_(journal.state); }
   catch (error) { refreshError = error; }

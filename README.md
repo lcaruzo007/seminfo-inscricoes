@@ -86,17 +86,31 @@ Depois de reabrir a planilha, o menu **SEMINFO** reúne as ações de operação
 |---|---|
 | Atualizar Forms e acrescentar a programação, preservando inscrições | `atualizarProgramacaoSeminfo2026` |
 | Aplicar os novos títulos aos Forms e atividades existentes | `atualizarFormularios` |
+| Criar ou consultar os três Meets, com reserva de 3 horas | `criarMeetsSeminfo2026` |
 | Cadastrar ou atualizar uma atividade | `salvarAtividade` |
 | Excluir uma atividade sem inscrições no histórico | `apagarAtividade` |
 | Conferir configurações, gatilhos e cotas | `conferirSistema` |
+| Consultar a cota de e-mail sem conferir Forms ou gatilhos | `consultarCotaEmails` |
+| Recuperar somente os gatilhos de uma instalação existente | `repararGatilhos` |
 | Abrir ou encerrar inscrições | `abrirInscricoes` / `encerrarInscricoes` |
 | Consultar ocupação | `consultarOcupacao` |
+| Corrigir capacidade e reavaliar recusas de uma atividade encerrada | `menuReavaliarInscricoes` |
 | Exportar uma lista de confirmados | `exportarConfirmados` |
 | Recuperar as abas de consulta | `reconstruirVisoes` |
 
 **Atualizar a programação** aplica os nomes, ministrantes, salas, horários e capacidades finais em `Atividades` e `Programacao`, incorpora os novos Forms e atualiza títulos e descrições. A migração mantém inscrições e registra a mudança no livro oficial; recusa o lote se uma capacidade ficar abaixo da ocupação ou os novos horários causarem conflitos. Consulte o [roteiro da programação final](docs/PROGRAMACAO_FINAL.md) para aplicar a atualização existente e conferir pendências.
 
+**Criar os Meets** reserva das **19h às 22h** no calendário principal da conta instaladora para as palestras online dos dias 26, 28 e 29/10. A função salva os links na aba `Meets` e no registro de execução, reaproveitando os eventos e ajustando seus horários em novas execuções. O [guia dos Meets](docs/MEETS.md) explica a autorização e a consulta dos links.
+
+Se **Conferir configuração e cotas** pedir reinstalação e o instalador atingir o tempo máximo, use **Consultar somente cota de e-mail** (`consultarCotaEmails` no editor). Essa consulta só lê o MailApp, exige a conta instaladora e mostra `destinatariosRestantes` e `cotaEsgotada`, mesmo com Forms inacessíveis ou uma instalação interrompida. Não envia mensagens nem aumenta a cota. Se o erro da conferência identificar gatilhos ausentes, duplicados ou de origem incorreta, execute **Reparar somente gatilhos** (`repararGatilhos`). O reparo preserva os gatilhos de outras automações e exige os mapeamentos já instalados. Não reconfigura perguntas, respostas, opções, inscrições ou fila. Ações de instalação/limpeza ainda ativas continuam bloqueando esse reparo; aguarde sua conclusão. Se a instalação terminou por tempo máximo, o marcador expira após oito minutos contados do início dessa instalação. O instalador completo continua sendo necessário para configurar Forms novos ou corrigir suas configurações.
+
+**Reavaliar inscrições recusadas / corrigir capacidade** recebe, por exemplo, `{"activityId":"OFICINA_IA_ALEM_CHAT","capacity":25,"reason":"Correção da capacidade e reavaliação das solicitações já enviadas."}`. A atividade individual deve estar `encerrada`. A prévia usa a última solicitação de cada CPF no livro oficial e considera somente recusas já registradas por fechamento (`closed`) ou lotação (`full`), em ordem de envio. Preserva confirmações, cancelamentos e trocas; não reutiliza uma autorização antiga para cancelar outras atividades e não aceita divergências de identidade ou respostas fora do período verificado. Respostas brutas ainda sem decisão e recusas por outros motivos não são importadas por essa ação. A prévia mostra nomes, motivos, ocupação prevista e vagas ainda livres. Após a confirmação pela organização, grava a capacidade e somente as novas confirmações elegíveis, com vínculo às recusas originais e novos avisos na fila. O Form continua encerrado. Alterações no livro ou no período verificado invalidam a prévia; após uma interrupção, prepare outra prévia para continuar sem duplicar confirmações. A operação pode deixar vagas livres se não houver candidatos elegíveis suficientes. O cadastro padrão da oficina de IA foi corrigido para 25 vagas; instalações existentes precisam aplicar a correção pelo menu.
+
 **Começar do zero** é uma operação separada: `comecarSeminfo2026DoZero` apaga os dados operacionais, limpa as respostas dos Forms de inscrição/cancelamento e mantém as respostas do Form histórico da CSP para permitir sua importação após o reinício. Cria backups ocultos e carrega a programação novamente. Os IDs, links e perguntas dos Forms são mantidos. Consulte o [guia de reinicialização](docs/COMECAR_DO_ZERO.md) antes de usar essa função.
+
+Cancelamentos administrativos, cadastro de atividades, consulta de ocupação e processamento manual de e-mails podem continuar durante a atualização rotineira das opções dos Forms. As decisões são gravadas sob bloqueio no livro oficial. Se as opções estiverem em atualização ou falharem depois de um cancelamento, o retorno indica `atualizacaoFormularios.adiada`; a vaga já foi liberada e a confirmação segue para processamento. A manutenção periódica ou **Atualizar opções dos Forms** sincroniza o formulário depois. Instalação, limpeza e alterações administrativas dos Forms continuam bloqueando essas operações.
+
+A coluna **SITUACAO** de `Atividades` e **Consultar ocupação** mostram a situação atual das inscrições: `lotada` quando todas as vagas estão ocupadas, `encerrada` quando o recebimento global ou a atividade está encerrado e `aberta` quando há vagas e a abertura está autorizada. Cadastros `pendente` e `cancelada` mantêm essas situações. Uma vaga liberada volta a indicar `aberta` somente se o recebimento continuar autorizado. A CSP conta equipes, não integrantes. O cadastro oficial continua separado; `consultarOcupacao` também informa `situacaoCadastro`. Para aplicar essa correção em uma instalação existente, copie `Persistence.gs` e `Admin.gs`, salve e use **Atualizar opções dos Forms** para reconstruir a consulta.
 
 ## Programação do evento
 

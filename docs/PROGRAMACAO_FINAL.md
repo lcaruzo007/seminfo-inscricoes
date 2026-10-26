@@ -26,7 +26,7 @@ Salvar um JSON em **Cadastrar / atualizar atividade** atualiza o cadastro e as o
 | Pipeline de Dados | Tiago Fernandes Moraes; Sala 16; 30 vagas; 27/10, 13h–17h |
 | Blender | Caio Henrique Magalhães; Sala 15; **20 vagas**; 27/10, 13h–17h |
 | Ollama | Gabriel Madeira; Sala 5 — Redes; 15 vagas; 27/10, 13h–17h |
-| IA Além do Chat | Título completo com Gemini; Rafaela Alves Magalhães e Felipe Antony Baquião Avelar; Sala 13; 30 vagas; 27/10, 13h–17h |
+| IA Além do Chat | Título completo com Gemini; Rafaela Alves Magalhães e Felipe Antony Baquião Avelar; Sala 13; 25 vagas; 27/10, 13h–17h |
 | Introdução à linguagem C | Matheus Matias dos Santos, Matheus Henrique Dias e Felipe Augusto de Melo Lozano; Cesário Coimbra — Sala 09; **40 vagas**, conforme correção posterior da organização; 27/10, **13h–17h** |
 | Palestra ABREU | 27/10, 13h30, Auditório H |
 | Segurança da Informação | Rafaela Alves Magalhães e Nycollas Icrad Luz Machado; Sala 15; 30 vagas; 28/10, 13h–17h |

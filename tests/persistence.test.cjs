@@ -163,6 +163,7 @@ function fixture() {
     currentRequest = response.request.key;
     return plain(response.request);
   };
+  context.isEligibleFormResponse_ = () => true;
 
   function activity(id, capacity = 3) {
     return {

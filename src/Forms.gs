@@ -709,7 +709,8 @@ function runSeminfoFormTrigger_(kind, event) {
   try { processFormResponse_(kind, event.source, event.response); }
   finally {
     postProcessing_(deadline);
-    try { sincronizarNomesAbasDeRespostas_(); }
+    // No envio, confere somente a aba do próprio Form; o periódico cobre as demais.
+    try { nomearAbasDeRespostas_([event.source.getId()]); }
     catch (error) { recordError_('nomear-abas-respostas', event.source.getId(), error); }
   }
 }

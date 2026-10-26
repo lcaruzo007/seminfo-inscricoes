@@ -120,6 +120,18 @@ Uma redução da capacidade abaixo da ocupação confirmada é bloqueada. Altera
 
 O menu oferece ocupação, lista de inscritos, exportação privada, abertura/encerramento, cancelamento administrativo com justificativa, correção auditada do e-mail, reprocessamento, envio da fila, erros e histórico. As funções públicas correspondentes são `salvarAtividade`, `consultarOcupacao`, `consultarInscritos`, `exportarConfirmados`, `cancelarInscricaoAdministrativa` e `alterarEmailParticipante`. A conta instaladora deve executar as alterações; demais organizadores podem receber acesso de leitura. Para exportar CSV, abra a aba `Lista_...` criada e use **Arquivo → Fazer download → Valores separados por vírgulas (aba atual)**.
 
+A coluna `SITUACAO` de `Atividades` é recalculada com a ocupação confirmada e o modo de recebimento, na mesma reconstrução que atualiza `OCUPACAO`:
+
+| Situação exibida | Condição |
+|---|---|
+| `pendente` | Cadastro com pendências. |
+| `cancelada` | Atividade cancelada no cadastro. |
+| `encerrada` | Atividade encerrada no cadastro ou recebimento global encerrado. |
+| `lotada` | Atividade aberta, recebimento global aberto e ocupação igual à capacidade. |
+| `aberta` | Atividade aberta, recebimento global aberto e vagas disponíveis. |
+
+`lotada` é uma situação calculada para consulta; o campo `status` do JSON de cadastro continua aceitando somente `aberta`, `encerrada`, `cancelada` e `pendente`. Um cancelamento de inscrição pode fazer a consulta voltar de `lotada` para `aberta`, mas não desfaz um encerramento administrativo. Na CSP, cada equipe confirmada ocupa uma vaga, independentemente do número de integrantes. `consultarOcupacao` retorna a mesma situação calculada em `situacao` e conserva a do cadastro em `situacaoCadastro`. Essa consulta representa as regras do sistema; a sincronização dos Forms aplica essas regras ao recebimento de respostas.
+
 A lista confirmada contém `NOME`, `EMAIL`, `CPF` completo (11 dígitos, como texto, preservando zeros iniciais) e `INSCRICAO`. Inclui somente inscrições com situação `confirmada` na atividade escolhida. Cada exportação cria uma nova aba; listas exportadas anteriormente são fotografias da situação daquele momento.
 
 `carregarDemonstracao` permanece disponível somente pelo editor para homologação em uma cópia isolada; foi retirada do menu de produção. Ela cria cinco atividades fictícias de novembro de 2026 e não sobrescreve IDs já existentes. Para este evento, use **Carregar programação XXI Seminfo**. Os CPFs sintéticos dos testes são dados matemáticos de demonstração; não representam pessoas e não devem ser cadastrados em produção.

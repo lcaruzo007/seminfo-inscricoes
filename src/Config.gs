@@ -136,12 +136,12 @@ function setConfig_(key, value) {
   sheet.getRange(rowNumber, 1, 1, 2).setNumberFormat('@').setValues([[key, safeCell_(String(value))]]);
 }
 
-function withLock_(fn, allowReset, allowPendingOperation) {
+function withLock_(fn, allowReset, allowPendingOperation, allowFormRefresh) {
   var lock = LockService.getScriptLock();
   lock.waitLock(getConfig_().TEMPO_LOCK_MS);
   try {
     if (!allowReset) assertNoReset_();
-    if (!allowPendingOperation) assertNoPendingOperation_();
+    if (!allowPendingOperation) assertNoPendingOperation_(allowFormRefresh);
     return fn();
   }
   finally { try { SpreadsheetApp.flush(); } finally { lock.releaseLock(); } }
@@ -156,7 +156,7 @@ function clearPendingOperation_(key, token) {
   if (properties.getProperty(key) === token) properties.deleteProperty(key);
 }
 
-function assertNoPendingOperation_() {
+function assertNoPendingOperation_(allowFormRefresh) {
   var properties = props_();
   var keys = ['SEMINFO_INSTALL_PENDING', 'SEMINFO_FORM_REFRESH_PENDING'];
   keys.forEach(function(key) {
@@ -167,6 +167,9 @@ function assertNoPendingOperation_() {
       properties.deleteProperty(key);
       return;
     }
+    // Somente a projeção de opções pode coexistir com decisões no livro oficial.
+    // Tokens antigos e operações administrativas continuam exclusivos.
+    if (allowFormRefresh && key === 'SEMINFO_FORM_REFRESH_PENDING' && /\|VIEW$/.test(String(value))) return;
     var operation = key === 'SEMINFO_INSTALL_PENDING' ? 'instalação' : 'atualização dos Forms';
     throw new Error('Há uma ' + operation + ' em andamento ou interrompida. Aguarde e tente novamente.');
   });
@@ -176,13 +179,13 @@ function assertNoReset_() {
   if (props_().getProperty('SEMINFO_RESET_PENDING')) throw new Error('Limpeza em andamento ou interrompida. Execute limparTudoERecomecar para concluir antes de operar o sistema.');
 }
 
-function requireInstaller_(allowReset) {
+function requireInstaller_(allowReset, allowFormRefresh) {
   var installer = props_().getProperty('SEMINFO_INSTALLER');
   var email = Session.getEffectiveUser().getEmail().toLowerCase();
   if (!installer || !email || installer !== email) throw new Error('Esta operação deve ser executada pela conta que instalou o sistema.');
   if (!allowReset) {
     assertNoReset_();
-    assertNoPendingOperation_();
+    assertNoPendingOperation_(allowFormRefresh);
   }
 }
 

@@ -10,6 +10,8 @@ function onOpen() {
     .addItem('Instalar / reinstalar com segurança', 'instalarSistema')
     .addItem('Configurar e-mail verificado nos Forms', 'configurarEmailVerificadoFormularios')
     .addItem('Conferir configuração e cotas', 'menuConferir')
+    .addItem('Consultar somente cota de e-mail', 'menuCotaEmails')
+    .addItem('Reparar somente gatilhos', 'menuRepararGatilhos')
     .addItem('Listar perguntas dos Forms existentes', 'menuPerguntasFormularios')
     .addItem('Listar perguntas do Form antigo da CSP', 'menuPerguntasImportacaoCsp')
     .addItem('Preparar prévia das inscrições antigas da CSP', 'menuPreviaImportacaoCsp')
@@ -18,10 +20,12 @@ function onOpen() {
     .addItem('Cadastrar / atualizar atividade', 'menuSalvarAtividade')
     .addItem('Apagar atividade', 'menuApagarAtividade')
     .addItem('Carregar programação XXI Seminfo', 'menuProgramacaoSeminfo2026')
+    .addItem('Criar / consultar Meets (3 horas)', 'criarMeetsSeminfo2026')
     .addItem('Atualizar nomes dos formulários', 'menuAtualizarFormularios')
     .addItem('Começar do zero com os mesmos Forms', 'menuComecarDoZero')
     .addItem('Atualizar opções dos Forms', 'atualizarOpcoesFormularios')
     .addItem('Consultar ocupação', 'menuOcupacao')
+    .addItem('Reavaliar inscrições recusadas / corrigir capacidade', 'menuReavaliarInscricoes')
     .addItem('Exportar lista confirmada', 'menuExportar')
     .addSeparator()
     .addItem('Abrir inscrições', 'abrirInscricoes')
@@ -102,21 +106,26 @@ function instalarSistema() {
 
 function installTriggersLocked_() {
   var triggers = ScriptApp.getProjectTriggers();
-  var specs = getTriggerPlan_().specs, keep = [];
+  var plan = getTriggerPlan_(), specs = plan.specs, keep = [], removed = 0, created = 0;
   specs.forEach(function(spec) {
     var found = triggers.find(function(t) { return t.getHandlerFunction() === spec.handler && t.getEventType() === spec.event && (!spec.id || t.getTriggerSourceId() === spec.id); });
     if (found) keep.push(found);
   });
   triggers.forEach(function(t) {
-    if (['aoEnviarInscricao', 'aoEnviarCancelamento', 'manutencaoPeriodica'].indexOf(t.getHandlerFunction()) >= 0 && keep.indexOf(t) < 0) ScriptApp.deleteTrigger(t);
+    if (['aoEnviarInscricao', 'aoEnviarCancelamento', 'manutencaoPeriodica'].indexOf(t.getHandlerFunction()) >= 0 && keep.indexOf(t) < 0) {
+      ScriptApp.deleteTrigger(t);
+      removed++;
+    }
   });
   specs.forEach(function(spec) {
     if (!keep.some(function(t) { return t.getHandlerFunction() === spec.handler && t.getEventType() === spec.event && (!spec.id || t.getTriggerSourceId() === spec.id); })) {
       var builder = ScriptApp.newTrigger(spec.handler);
-      if (spec.id) builder.forForm(openFormWithDriveRetry_(spec.id)).onFormSubmit().create();
+      if (spec.id) builder.forForm(spec.id).onFormSubmit().create();
       else builder.timeBased().everyMinutes(5).create();
+      created++;
     }
   });
+  return {mantidos: keep.length, criados: created, removidos: removed, total: specs.length, formsViaVarredura: plan.viaVarredura};
 }
 
 /** Reserva o periódico e usa os slots restantes; os demais Forms são varridos. */
@@ -130,6 +139,52 @@ function getTriggerPlan_() {
   var specs = selected.map(function(s) { return {handler: s.kind === 'INSCRICAO' ? 'aoEnviarInscricao' : 'aoEnviarCancelamento', id: s.id, event: ScriptApp.EventType.ON_FORM_SUBMIT}; });
   specs.push({handler: 'manutencaoPeriodica', id: '', event: ScriptApp.EventType.CLOCK});
   return {specs: specs, viaVarredura: priority.slice(selected.length).map(function(s) { return s.id; })};
+}
+
+/** Recupera a automação existente sem reconfigurar Forms nem reconstruir o livro. */
+function repararGatilhos() {
+  requireInstaller_(false, true);
+  var result = withLock_(function () {
+    requireInstaller_(false, true);
+    var properties = props_().getProperties(), sources = getFormSources_();
+    if (!sources.some(function (source) { return source.kind === 'INSCRICAO'; })) throw new Error('Instale os formulários antes de reparar seus gatilhos.');
+    sources.forEach(function (source) {
+      var keys = source.kind === 'INSCRICAO' ? ['NAME', 'CPF', 'SWAP'] : ['CPF', 'CANCEL'];
+      if (source.kind !== 'INSCRICAO' || !source.activityId) keys.push('ACTIVITY');
+      var legacyOrigin = properties['SEMINFO_ID_FORM_' + source.kind] === source.id;
+      keys.forEach(function (key) {
+        if (!properties['SEMINFO_ITEM_' + source.id + '_' + key] &&
+            !(legacyOrigin && properties['SEMINFO_ITEM_' + source.kind + '_' + key])) {
+          throw new Error('A instalação do formulário ' + source.id + ' está incompleta (campo ' + key + '). Conclua a configuração desse Form antes de reparar os gatilhos.');
+        }
+      });
+    });
+    var report = installTriggersLocked_();
+    conferirGatilhos_();
+    return report;
+  }, false, false, true);
+  console.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
+function conferirGatilhos_() {
+  var triggers = ScriptApp.getProjectTriggers(), plan = getTriggerPlan_();
+  plan.specs.forEach(function (spec) {
+    var matching = triggers.filter(function (t) { return t.getHandlerFunction() === spec.handler && t.getEventType() === spec.event && (!spec.id || t.getTriggerSourceId() === spec.id); });
+    if (matching.length !== 1) throw new Error('Gatilho ausente, duplicado ou de origem incorreta: ' + spec.handler + ' / ' + spec.id + '. Execute repararGatilhos (SEMINFO → Reparar somente gatilhos).');
+  });
+  var managedCount = triggers.filter(function (t) { return ['aoEnviarInscricao', 'aoEnviarCancelamento', 'manutencaoPeriodica'].indexOf(t.getHandlerFunction()) >= 0; }).length;
+  if (managedCount !== plan.specs.length) throw new Error('Gatilhos SEMINFO excedentes ou de origem incorreta. Execute repararGatilhos (SEMINFO → Reparar somente gatilhos).');
+  return plan;
+}
+
+/** Consulta somente o MailApp: continua disponível mesmo com instalação interrompida. */
+function consultarCotaEmails() {
+  requireInstaller_(true); // Somente leitura; mantém a exigência da conta instaladora.
+  var remaining = MailApp.getRemainingDailyQuota();
+  var report = {destinatariosRestantes: remaining, cotaEsgotada: remaining === 0, consultadaEm: new Date().toISOString()};
+  console.log(JSON.stringify(report, null, 2));
+  return report;
 }
 
 function protectOperationalSheetsLocked_() {
@@ -154,14 +209,7 @@ function conferirSistema() {
   validateFixedFormActivities_(journal.state);
   if (db_().getSpreadsheetTimeZone() !== config.FUSO || Session.getScriptTimeZone() !== config.FUSO) throw new Error('Fuso da planilha/projeto divergente.');
   var forms = verifyForms_(false);
-  var triggers = ScriptApp.getProjectTriggers();
-  var plan = getTriggerPlan_();
-  plan.specs.forEach(function(spec) {
-    var matching = triggers.filter(function(t) { return t.getHandlerFunction() === spec.handler && t.getEventType() === spec.event && (!spec.id || t.getTriggerSourceId() === spec.id); });
-    if (matching.length !== 1) throw new Error('Gatilho ausente, duplicado ou de origem incorreta: ' + spec.handler + ' / ' + spec.id + '. Reexecute instalarSistema.');
-  });
-  var managedCount = triggers.filter(function(t) { return ['aoEnviarInscricao', 'aoEnviarCancelamento', 'manutencaoPeriodica'].indexOf(t.getHandlerFunction()) >= 0; }).length;
-  if (managedCount !== plan.specs.length) throw new Error('Gatilhos SEMINFO excedentes ou de origem incorreta. Reexecute instalarSistema.');
+  var plan = conferirGatilhos_();
   return {instalador: props_().getProperty('SEMINFO_INSTALLER'), emailCa: config.EMAIL_CA, copiaCa: config.ENVIAR_COPIA_CA,
     destinatariosRestantes: MailApp.getRemainingDailyQuota(), inscricoesAbertas: journal.state.accepting,
     operacoes: journal.operations.length, atividades: Object.keys(journal.state.activities).length, forms: forms, formsViaVarredura: plan.viaVarredura,
@@ -194,13 +242,13 @@ function changeMode_(accepting) {
 }
 
 function atualizarOpcoesFormularios() {
-  requireInstaller_();
+  requireInstaller_(false, true);
   return refreshFormsSafely_();
 }
 
 /** Todas as mudanças de cadastro passam aqui; Atividades é uma visão protegida. */
 function salvarAtividade(activity) {
-  requireInstaller_();
+  requireInstaller_(false, true);
   var normalized = SemDomain.validateActivity(activity);
   var saved = withLock_(function() {
     var journal = readJournal_();
@@ -209,13 +257,13 @@ function salvarAtividade(activity) {
     commitOperationLocked_(journal, {key: 'ADMIN:CATALOG:' + Utilities.getUuid(), kind: 'CATALOG', at: new Date().toISOString(), activity: normalized});
     journal = readJournal_(); rebuildViewsLocked_(journal);
     return normalized;
-  });
+  }, false, false, true);
   try { refreshFormsSafely_(); } catch (error) { recordError_('opcoes', normalized.id, error); }
   return saved;
 }
 
 function cancelarInscricaoAdministrativa(cpf, activityId, reason) {
-  requireInstaller_();
+  requireInstaller_(false, true);
   cpf = SemDomain.normalizeCpf(cpf);
   reason = String(reason || '').trim();
   if (reason.length < 5 || reason.length > 500) throw new Error('Justificativa deve ter entre 5 e 500 caracteres.');
@@ -230,8 +278,16 @@ function cancelarInscricaoAdministrativa(cpf, activityId, reason) {
     commitOperationLocked_(journal, {key: key, kind: 'REQUEST', at: now, request: request, outcome: outcome, reason: reason});
     journal = readJournal_(); rebuildViewsLocked_(journal);
     return outcome;
-  });
-  refreshFormsSafely_();
+  }, false, false, true);
+  // O cancelamento já foi persistido. Uma falha nas opções não desfaz a vaga
+  // liberada nem impede a tentativa de envio da confirmação.
+  try {
+    var refresh = refreshFormsSafely_();
+    if (refresh && refresh.adiada) result.atualizacaoFormularios = refresh;
+  } catch (error) {
+    result.atualizacaoFormularios = {adiada: true, motivo: safeError_(error)};
+    recordError_('cancelamento-opcoes', activityId, error);
+  }
   postProcessing_();
   return result;
 }
@@ -252,9 +308,138 @@ function alterarEmailParticipante(cpf, newEmail, reason) {
 }
 
 function consultarOcupacao() {
-  requireInstaller_();
+  requireInstaller_(false, true);
   var state = readState_();
-  return Object.values(state.activities).map(function(a) { return {id: a.id, titulo: a.title, capacidade: a.capacity, ocupacao: SemDomain.occupancy(state, a.id), situacao: a.status}; });
+  return Object.values(state.activities).map(function(a) {
+    var occupied = SemDomain.occupancy(state, a.id);
+    return {id: a.id, titulo: a.title, capacidade: a.capacity, ocupacao: occupied,
+      situacao: activityRegistrationStatus_(state, a, occupied), situacaoCadastro: a.status};
+  });
+}
+
+/** Simula somente recusas por fechamento/lotação, mantendo a recepção fechada. */
+function planoReavaliacaoInscricoes_(journal, activityId, capacity) {
+  var current = journal.state.activities[activityId];
+  if (!current) throw new Error('Atividade inexistente.');
+  if (current.status !== 'encerrada' || current.capacityUnit === 'equipes') throw new Error('A reavaliação exige uma atividade individual encerrada.');
+  if (!Number.isInteger(capacity) || capacity < 1) throw new Error('Informe uma capacidade inteira positiva.');
+  var activity = SemDomain.validateActivity(Object.assign({}, current, {capacity: capacity}));
+  var state = SemDomain.applyOperation(journal.state, {key: 'PREVIA:CAPACIDADE:' + activityId,
+    kind: 'CATALOG', at: new Date().toISOString(), activity: activity});
+  var properties = props_().getProperties(), sources = getFormSources_(), latest = {}, history = {};
+  Object.values(state.registrations).forEach(function (registration) {
+    if (registration.activityId === activityId && registration.cpf) history[registration.cpf] = registration;
+  });
+  journal.operations.forEach(function (operation) {
+    var request = operation.request;
+    if (operation.kind !== 'REQUEST' || !request || request.kind !== 'INSCRICAO' || request.activityId !== activityId || operation.reassessmentOf) return;
+    var cpf;
+    try { cpf = SemDomain.normalizeCpf(request.cpf); }
+    catch (_) { cpf = 'INVALIDO:' + operation.key; }
+    var previous = latest[cpf];
+    if (!previous || Date.parse(request.submittedAt) > Date.parse(previous.request.submittedAt) ||
+        Date.parse(request.submittedAt) === Date.parse(previous.request.submittedAt) && operation.key > previous.key) latest[cpf] = operation;
+  });
+  var rows = [], operations = [], counts = {};
+  Object.keys(latest).map(function (cpf) { return {cpf: cpf, original: latest[cpf]}; }).sort(function (a, b) {
+    return Date.parse(a.original.request.submittedAt) - Date.parse(b.original.request.submittedAt) || a.original.key.localeCompare(b.original.key);
+  }).forEach(function (entry) {
+    var original = entry.original, request = original.request, previous = history[entry.cpf], code, detail;
+    var source = sources.find(function (source) { return source.kind === 'INSCRICAO' && source.id === request.formId && (!source.activityId || source.activityId === activityId); });
+    var cutoff = properties['SEMINFO_VERIFIED_SINCE_' + request.formId];
+    var key = 'ADMIN:REAVALIACAO:' + protocol_(original.key), outcome;
+    if (previous) {
+      code = previous.status === 'confirmada' ? 'ja_confirmada' : 'cancelada_ou_trocada';
+      detail = previous.status === 'confirmada' ? 'Inscrição atual preservada.' : 'Cancelamento ou troca anterior preservado; não será reinscrita.';
+    } else if (!original.outcome || ['closed', 'full'].indexOf(original.outcome.code) < 0) {
+      code = 'outra_recusa'; detail = original.outcome && original.outcome.message || 'Não há recusa por fechamento ou lotação.';
+    } else if (journal.byKey[key]) {
+      code = 'ja_reavaliada'; detail = 'Esta resposta já foi reavaliada.';
+    } else if (!source || request.key !== request.formId + ':' + request.responseId || request.identitySource ||
+        !cutoff || !(Date.parse(request.submittedAt) > Date.parse(cutoff)) ||
+        properties.SEMINFO_RESET_AT && Date.parse(request.submittedAt) <= Date.parse(properties.SEMINFO_RESET_AT)) {
+      code = 'origem_nao_elegivel'; detail = 'Origem ou período verificado não permite reavaliação desta resposta.';
+    } else {
+      // A autorização antiga de troca não cancela inscrições escolhidas depois.
+      var revised = Object.assign({}, request, {key: key, protocol: protocol_(key), authorizeSwap: false});
+      var activities = Object.assign({}, state.activities);
+      activities[activityId] = Object.assign({}, activity, {status: 'aberta'});
+      var decisionState = Object.assign({}, state, {accepting: true, activities: activities});
+      outcome = enrichOutcome_(state, revised, SemDomain.decide(decisionState, revised));
+      code = outcome.code; detail = outcome.message;
+      if (code === 'confirmed') {
+        outcome.changes.forEach(function (change) { if (change.registration) change.registration.activity = activity; });
+        var operation = {key: key, kind: 'REQUEST', at: new Date().toISOString(), request: revised, outcome: outcome,
+          reassessmentOf: original.key, reassessedBy: properties.SEMINFO_INSTALLER,
+          reason: 'Reavaliação administrativa de resposta recusada por fechamento ou lotação, sem cancelar outras inscrições.'};
+        state = SemDomain.applyOperation(state, operation);
+        operations.push(operation);
+      }
+    }
+    counts[code] = (counts[code] || 0) + 1;
+    rows.push({protocolo: request.protocol, nome: request.name, recebidaEm: request.submittedAt,
+      resultadoAnterior: original.outcome && original.outcome.code || '', resultadoPrevisto: code, detalhe: detail});
+  });
+  return {activity: activity, operations: operations, report: {activityId: activityId, capacidade: capacity,
+    ocupacaoAtual: SemDomain.occupancy(journal.state, activityId), novasConfirmacoes: operations.length,
+    ocupacaoPrevista: SemDomain.occupancy(state, activityId), vagasRestantes: capacity - SemDomain.occupancy(state, activityId),
+    resultados: counts, solicitacoes: rows}, token: hash_(JSON.stringify({head: journal.head, activity: activity,
+      generation: properties.SEMINFO_GENERATION || '', resetAt: properties.SEMINFO_RESET_AT || '', sources: sources,
+      cutoffs: sources.map(function (source) { return properties['SEMINFO_VERIFIED_SINCE_' + source.id] || ''; })}))};
+}
+
+function prepararReavaliacaoInscricoes(activityId, capacity) {
+  requireInstaller_(false, true);
+  var result = withLock_(function () {
+    var plan = planoReavaliacaoInscricoes_(readJournal_(), String(activityId || '').trim(), capacity);
+    return Object.assign({token: plan.token}, plan.report);
+  }, false, false, true);
+  console.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
+/** Revalida o livro sob lock; cada confirmação conserva o vínculo com a recusa original. */
+function confirmarReavaliacaoInscricoes(activityId, capacity, token, reason) {
+  requireInstaller_(false, true);
+  activityId = String(activityId || '').trim();
+  reason = String(reason || '').trim();
+  if (reason.length < 5 || reason.length > 500) throw new Error('Justificativa deve ter entre 5 e 500 caracteres.');
+  var result = withLock_(function () {
+    var journal = readJournal_(), plan = planoReavaliacaoInscricoes_(journal, String(activityId || '').trim(), capacity);
+    if (!token || token !== plan.token) throw new Error('O cadastro ou as inscrições mudaram depois da prévia. Prepare a reavaliação novamente.');
+    if (JSON.stringify(journal.state.activities[activityId]) !== JSON.stringify(plan.activity)) {
+      commitOperationLocked_(journal, {key: 'ADMIN:CAPACIDADE:' + token, kind: 'CATALOG',
+        at: new Date().toISOString(), activity: plan.activity, reason: reason});
+      journal = readJournal_();
+    }
+    plan.operations.forEach(function (operation) {
+      operation.reason = reason;
+      commitOperationLocked_(journal, operation);
+      journal = readJournal_();
+    });
+    rebuildViewsLocked_(journal);
+    return {activityId: activityId, capacidade: capacity, novasConfirmacoes: plan.operations.length,
+      ocupacao: SemDomain.occupancy(journal.state, activityId), situacao: journal.state.activities[activityId].status,
+      vagasRestantes: capacity - SemDomain.occupancy(journal.state, activityId)};
+  }, false, false, true);
+  // O Form já está encerrado; não repete a atualização lenta de todos os Forms.
+  console.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
+function menuReavaliarInscricoes() {
+  var text = promptText_('Reavaliar inscrições recusadas / corrigir capacidade',
+    'Cole JSON: {"activityId":"OFICINA_IA_ALEM_CHAT","capacity":25,"reason":"Correção da capacidade e reavaliação das solicitações já enviadas."}. A atividade deve estar encerrada.');
+  if (text === null) return;
+  var input = JSON.parse(text), preview = prepararReavaliacaoInscricoes(input.activityId, input.capacity), ui = SpreadsheetApp.getUi();
+  var message = 'Capacidade: ' + preview.capacidade + '\nOcupação atual: ' + preview.ocupacaoAtual +
+    '\nNovas confirmações possíveis: ' + preview.novasConfirmacoes + '\nOcupação prevista: ' + preview.ocupacaoPrevista +
+    '\nVagas ainda livres: ' + preview.vagasRestantes + '\n\n' + preview.solicitacoes.map(function (row) {
+      return row.nome + ': ' + row.resultadoPrevisto + ' — ' + row.detalhe;
+    }).join('\n') + '\n\nAplicar a capacidade e as confirmações previstas? O formulário continuará encerrado.';
+  if (ui.alert('Prévia da reavaliação', message, ui.ButtonSet.YES_NO) === ui.Button.YES) {
+    ui.alert(JSON.stringify(confirmarReavaliacaoInscricoes(input.activityId, input.capacity, preview.token, input.reason), null, 2));
+  }
 }
 
 function consultarInscritos(activityId) {
@@ -310,10 +495,12 @@ function promptText_(title, instruction) {
   return answer.getSelectedButton() === ui.Button.OK ? answer.getResponseText().trim() : null;
 }
 function menuConferir() { SpreadsheetApp.getUi().alert(JSON.stringify(conferirSistema(), null, 2)); }
+function menuCotaEmails() { SpreadsheetApp.getUi().alert(JSON.stringify(consultarCotaEmails(), null, 2)); }
+function menuRepararGatilhos() { SpreadsheetApp.getUi().alert(JSON.stringify(repararGatilhos(), null, 2)); }
 function menuPerguntasFormularios() { requireInstaller_(); SpreadsheetApp.getUi().alert(JSON.stringify(listarPerguntasDosFormularios(), null, 2)); }
 function menuOcupacao() { SpreadsheetApp.getUi().alert(JSON.stringify(consultarOcupacao(), null, 2)); }
 function menuProcessarSolicitacoes() { SpreadsheetApp.getUi().alert(JSON.stringify(processarSolicitacoesPendentes(), null, 2)); postProcessing_(); }
-function menuProcessarEmails() { requireInstaller_(); SpreadsheetApp.getUi().alert(JSON.stringify(processarNotificacoes(), null, 2)); }
+function menuProcessarEmails() { requireInstaller_(false, true); SpreadsheetApp.getUi().alert(JSON.stringify(processarNotificacoes(), null, 2)); }
 function menuErros() { requireInstaller_(); db_().setActiveSheet(db_().getSheetByName('Erros')); }
 function menuHistorico() { requireInstaller_(); db_().setActiveSheet(db_().getSheetByName('Historico')); }
 function menuSalvarAtividade() {
@@ -450,7 +637,7 @@ function programacaoSeminfo2026_() {
     item('OFICINA_YASMIN_GABRIEL', '2026-10-27', '13:00', '17:00', 'Pipeline de Dados em Tempo Real: Do Zero ao Dashboard', 'oficina', 'Tiago Fernandes Moraes', 'Sala 16', 30),
     item('OFICINA_BLENDER', '2026-10-27', '13:00', '17:00', 'Introdução ao 3D com Blender', 'oficina', 'Caio Henrique Magalhães', 'Sala 15', 20),
     item('OFICINA_OLLAMA', '2026-10-27', '13:00', '17:00', 'Rodando Inteligência Artificial no seu PC com Ollama', 'oficina', 'Gabriel Madeira', 'Sala 5 — Redes', 15),
-    item('OFICINA_IA_ALEM_CHAT', '2026-10-27', '13:00', '17:00', 'IA Além do Chat: Guia Prático para Geração de Imagens e Vídeos com o Gemini', 'oficina', 'Rafaela Alves Magalhães e Felipe Antony Baquião Avelar', 'Sala 13', 30),
+    item('OFICINA_IA_ALEM_CHAT', '2026-10-27', '13:00', '17:00', 'IA Além do Chat: Guia Prático para Geração de Imagens e Vídeos com o Gemini', 'oficina', 'Rafaela Alves Magalhães e Felipe Antony Baquião Avelar', 'Sala 13', 25),
     item('OFICINA_C', '2026-10-27', '13:00', '17:00', 'Introdução à linguagem C', 'oficina', 'Matheus Matias dos Santos, Matheus Henrique Dias e Felipe Augusto de Melo Lozano', 'Cesário Coimbra — Sala 09', 40),
     item('OFICINA_JOGOS_NOITE', '2026-10-27', '19:00', '23:00', 'Desenvolvimento de Jogos 2D com GameMaker — Noite', 'oficina', 'Ricardo José Martins', 'Sala 14', 30),
     item('PALESTRA_BIO', '2026-10-27', '13:30', '', 'Acervo Brasileiro de Referências sobre Eugenia (ABREU): o uso de ferramentas Google na construção de uma plataforma de divulgação científica', 'palestra', '', 'Auditório H', null, 'Término, capacidade e palestrante.'),
@@ -460,6 +647,103 @@ function programacaoSeminfo2026_() {
     item('ENCERRAMENTO_2026', '2026-10-29', '15:30', '17:00', 'Encerramento', '', '', 'Auditório H', null, 'Sem Form de inscrição informado.'),
     item('PALESTRA_JOHNATAN', '2026-10-29', '19:30', '', 'Ainda precisamos aprender a programar? O futuro da Engenharia de Software na era da Inteligência Artificial', 'palestra', 'Prof. Dr. Johnatan Alves de Oliveira', 'Online — Google Meet', null, 'Término e capacidade.')
   ];
+}
+
+/** Reserva das 19h às 22h no calendário principal da conta instaladora e lista os links em Meets. */
+function criarMeetsSeminfo2026() {
+  requireInstaller_();
+  if (typeof Calendar === 'undefined') throw new Error('Habilite o serviço Google Calendar API, versão v3, com identificador Calendar.');
+  return withLock_(function () {
+    var ids = ['NOITE_26', 'PALESTRA_DANIELE', 'PALESTRA_JOHNATAN'];
+    var report = programacaoSeminfo2026_().filter(function (entry) { return ids.indexOf(entry.id) >= 0; }).map(function (entry) {
+      var start = entry.date + 'T19:00:00-03:00';
+      var end = new Date(Date.parse(start) + 3 * 60 * 60 * 1000).toISOString();
+      var row = {ATIVIDADE_ID: entry.id, TITULO: entry.title, PALESTRANTE: entry.instructor,
+        INICIO: start, TERMINO: end, MEET: '', EVENTO_AGENDA: '', SITUACAO: ''};
+      try {
+        var event = obterOuCriarMeetSeminfo_(entry, start, end);
+        row.INICIO = event.start.dateTime;
+        row.TERMINO = event.end.dateTime;
+        row.MEET = linkMeetSeminfo_(event);
+        row.EVENTO_AGENDA = event.htmlLink || '';
+        var status = event.conferenceData && event.conferenceData.createRequest && event.conferenceData.createRequest.status;
+        row.SITUACAO = row.MEET ? 'PRONTO' : status && status.statusCode === 'failure' ?
+          'ERRO: Google não conseguiu gerar o Meet; confira a conta e execute novamente.' :
+          'PENDENTE: execute novamente para consultar o link.';
+      } catch (error) {
+        row.SITUACAO = 'ERRO: ' + safeError_(error);
+      }
+      console.log(entry.title + '\n' + (row.MEET || row.SITUACAO));
+      return row;
+    });
+    writeTable_('Meets', ['ATIVIDADE_ID', 'TITULO', 'PALESTRANTE', 'INICIO', 'TERMINO', 'MEET', 'EVENTO_AGENDA', 'SITUACAO'], report);
+    if (report.some(function (row) { return row.SITUACAO.indexOf('ERRO:') === 0; })) {
+      throw new Error('Há falhas na criação dos Meets. Consulte a aba Meets e o registro de execução. Execute novamente após corrigir; os eventos já criados serão reaproveitados.');
+    }
+    return report;
+  });
+}
+
+function obterOuCriarMeetSeminfo_(entry, start, end) {
+  // ID estável: uma resposta perdida ou a repetição da função não gera outro evento.
+  var id = 'seminfo2026' + protocol_('MEET:' + entry.id).slice(4).toLowerCase();
+  var marker = 'SEMINFO_2026:' + entry.id;
+  var event;
+  try { event = Calendar.Events.get('primary', id); }
+  catch (error) { if (!erroCalendarSeminfo_(error, 404)) throw error; }
+  if (!event) {
+    var resource = {id: id, summary: 'XXI SEMINFO — ' + entry.title,
+      description: 'Palestrante: ' + entry.instructor + '\nReserva de 3 horas, incluindo margem para atrasos.',
+      start: {dateTime: start, timeZone: 'America/Sao_Paulo'},
+      end: {dateTime: end, timeZone: 'America/Sao_Paulo'},
+      extendedProperties: {private: {seminfoMeet: marker}},
+      conferenceData: pedidoMeetSeminfo_()};
+    try { event = Calendar.Events.insert(resource, 'primary', {conferenceDataVersion: 1, sendUpdates: 'none'}); }
+    catch (error) {
+      if (!erroCalendarSeminfo_(error, 409)) throw error;
+      event = Calendar.Events.get('primary', id);
+    }
+  }
+  if (event.status === 'cancelled') throw new Error('O evento foi excluído do calendário. Confira-o na lixeira do Google Agenda antes de continuar.');
+  if (!event.extendedProperties || !event.extendedProperties.private || event.extendedProperties.private.seminfoMeet !== marker) {
+    throw new Error('O ID do evento já existe e não pertence a esta palestra da SEMINFO.');
+  }
+  // Atualiza também as reservas antigas, preservando o mesmo evento e o link do Meet.
+  if (Date.parse(event.start && event.start.dateTime) !== Date.parse(start) || Date.parse(event.end && event.end.dateTime) !== Date.parse(end)) {
+    event = Calendar.Events.patch({start: {dateTime: start, timeZone: 'America/Sao_Paulo'},
+      end: {dateTime: end, timeZone: 'America/Sao_Paulo'}}, 'primary', id, {conferenceDataVersion: 1, sendUpdates: 'none'});
+  }
+  // Só repete pedidos de conferência ausentes ou falhos.
+  var data = event.conferenceData, request = data && data.createRequest;
+  if (!linkMeetSeminfo_(event) && (!data || !request || request.status && request.status.statusCode === 'failure')) {
+    event = Calendar.Events.patch({conferenceData: pedidoMeetSeminfo_()}, 'primary', id, {conferenceDataVersion: 1, sendUpdates: 'none'});
+  }
+  for (var attempt = 0; attempt < 5 && !linkMeetSeminfo_(event); attempt++) {
+    var status = event.conferenceData && event.conferenceData.createRequest && event.conferenceData.createRequest.status;
+    if (status && status.statusCode === 'failure') break;
+    Utilities.sleep(1000);
+    event = Calendar.Events.get('primary', id);
+  }
+  return event;
+}
+
+function pedidoMeetSeminfo_() {
+  return {createRequest: {requestId: Utilities.getUuid(), conferenceSolutionKey: {type: 'hangoutsMeet'}}};
+}
+
+function linkMeetSeminfo_(event) {
+  if (event.hangoutLink) return event.hangoutLink;
+  var entries = event.conferenceData && event.conferenceData.entryPoints || [];
+  var video = entries.find(function (entry) { return entry.entryPointType === 'video'; });
+  return video && video.uri || '';
+}
+
+function erroCalendarSeminfo_(error, code) {
+  var found = Number(error && (error.code || error.details && error.details.code));
+  if (found) return found === code;
+  var message = String(error && error.message || error);
+  return code === 404 ? /\b404\b|\bNot Found\b|\bNão encontrado\b/i.test(message) :
+    /\b409\b|\balready exists\b|\bConflict\b|\bjá existe\b/i.test(message);
 }
 
 function isPendingProgramActivity_(id) {
