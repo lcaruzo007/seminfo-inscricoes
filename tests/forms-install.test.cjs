@@ -881,6 +881,137 @@ test('Situação de consulta acompanha fechamento global e preserva encerramento
   assert.equal(e.context.consultarOcupacao().find(row => row.id === 'A').ocupacao, 0);
 });
 
+test('Encerramento de 27 à tarde abrange palestras e oficinas, preserva dados e sincroniza Forms uma vez', () => {
+  const e = environment(), ollama = e.manualRegistration('OFICINA_OLLAMA'), night = e.manualRegistration('OFICINA_JOGOS_NOITE');
+  e.configureExisting([ollama, night], false); e.installed(); e.context.carregarProgramacaoSeminfo2026();
+  e.context.salvarAtividade({...e.context.readState_().activities.OFICINA_OLLAMA, capacity: 18});
+  e.context.salvarAtividade({...e.context.readState_().activities.OFICINA_IA_ALEM_CHAT, status: 'encerrada'});
+  for (const activity of [
+    e.activity('PALESTRA_12', {type: 'palestra', start: '2026-10-27T15:00:00Z', end: '2026-10-27T16:00:00Z'}),
+    e.activity('PALESTRA_18', {type: 'palestra', start: '2026-10-27T21:00:00Z', end: '2026-10-27T22:00:00Z'}),
+    e.activity('MANHA', {start: '2026-10-27T11:00:00-03:00', end: '2026-10-27T12:00:00-03:00'}),
+    e.activity('DIA_26', {start: '2026-10-26T13:00:00-03:00', end: '2026-10-26T17:00:00-03:00'}),
+    e.activity('OUTRO_TIPO', {type: 'programacao', start: '2026-10-27T13:00:00-03:00', end: '2026-10-27T17:00:00-03:00'}),
+    e.activity('CANCELADA', {status: 'cancelada', start: '2026-10-27T13:00:00-03:00', end: '2026-10-27T17:00:00-03:00'})
+  ]) e.context.salvarAtividade(activity);
+  e.context.abrirInscricoes();
+  const input = e.responseFrom(ollama);
+  e.context.processFormResponse_('INSCRICAO', input.form, input.response);
+  const before = e.context.readJournal_(), queueSyncs = e.stats.queueSyncs;
+  const targetIds = ['OFICINA_GAMEMAKER', 'OFICINA_YASMIN_GABRIEL', 'OFICINA_BLENDER', 'OFICINA_OLLAMA', 'OFICINA_C', 'PALESTRA_12'];
+  const result = e.context.encerrarAtividades27Tarde(), after = e.context.readJournal_();
+  assert.deepEqual(Array.from(result.encerradas).sort(), targetIds.sort());
+  assert.equal(result.jaBloqueadas.find(row => row.id === 'PALESTRA_BIO').situacao, 'pendente');
+  for (const [id, activity] of Object.entries(before.state.activities)) {
+    const expected = targetIds.includes(id) ? {...activity, status: 'encerrada'} : activity;
+    assert.equal(JSON.stringify(after.state.activities[id]), JSON.stringify(expected), id);
+  }
+  assert.equal(JSON.stringify(after.state.registrations), JSON.stringify(before.state.registrations));
+  assert.equal(JSON.stringify(after.state.participants), JSON.stringify(before.state.participants));
+  assert.equal(after.state.accepting, before.state.accepting);
+  assert.equal(after.operations.length, before.operations.length + targetIds.length);
+  assert.equal(ollama.form.accepting, false); assert.equal(night.form.accepting, true);
+  assert.equal(result.atualizacaoFormularios.atualizados, 2);
+  assert.equal(e.stats.queueSyncs, queueSyncs + 1);
+  assert.equal(e.stats.formOpensWhileLocked, 0);
+  assert.equal(e.context.encerrarAtividades27Tarde().encerradas.length, 0);
+  assert.equal(e.context.readJournal_().head, after.head, 'repetição não duplica alterações');
+  assert.equal(e.stats.queueSyncs, queueSyncs + 1);
+});
+
+test('Encerramento de 27 à tarde conserva decisões se os Forms falharem e permite retomar a sincronização', () => {
+  const e = environment(); e.installed();
+  e.context.salvarAtividade(e.activity('A', {start: '2026-10-27T13:00:00-03:00', end: '2026-10-27T17:00:00-03:00'}));
+  e.context.abrirInscricoes();
+  const refresh = e.context.refreshFormsSafely_;
+  e.context.refreshFormsSafely_ = () => { throw new Error('Forms temporariamente indisponível'); };
+  const result = e.context.encerrarAtividades27Tarde();
+  assert.equal(e.context.readState_().activities.A.status, 'encerrada');
+  assert.equal(result.atualizacaoFormularios.adiada, true);
+  assert.match(result.atualizacaoFormularios.motivo, /temporariamente indisponível/);
+  const head = e.context.readJournal_().head;
+  e.context.refreshFormsSafely_ = refresh;
+  assert.equal(e.context.encerrarAtividades27Tarde().atualizacaoFormularios.adiada, false);
+  assert.equal(e.forms.get(e.context.getConfig_().ID_FORM_INSCRICAO).accepting, false);
+  assert.equal(e.context.readJournal_().head, head);
+});
+
+test('Encerramento de 27 à tarde exige a conta instaladora antes de alterar o catálogo', () => {
+  const e = environment(); e.installed();
+  const head = e.context.readJournal_().head;
+  e.context.Session.getEffectiveUser = () => ({getEmail: () => 'outra@example.org'});
+  assert.throws(() => e.context.encerrarAtividades27Tarde(), /conta que instalou/);
+  assert.equal(e.context.readJournal_().head, head);
+});
+
+test('Listas de 27 à tarde incluem somente confirmados, preservam o livro e usam uma única leitura do estado', () => {
+  const e = environment(); e.installed(); e.context.carregarProgramacaoSeminfo2026(); e.context.abrirInscricoes();
+  e.context.Utilities.getUuid = () => crypto.randomUUID();
+  for (const overrides of [
+    {email: 'ana@example.org', answers: {NAME: 'Ana Exemplo', CPF: '01234567890', ACTIVITY: '[OFICINA_OLLAMA] Ollama'}},
+    {email: 'outra@example.org', answers: {NAME: 'Pessoa Cancelada', CPF: '11144477735', ACTIVITY: '[OFICINA_OLLAMA] Ollama'}},
+    {email: 'ana@example.org', answers: {NAME: 'Ana Exemplo', CPF: '01234567890', ACTIVITY: '[OFICINA_JOGOS_NOITE] Jogos'}}
+  ]) {
+    const input = e.response('INSCRICAO', overrides);
+    assert.equal(e.context.processFormResponse_('INSCRICAO', input.form, input.response).code, 'confirmed');
+  }
+  e.context.cancelarInscricaoAdministrativa('11144477735', 'OFICINA_OLLAMA', 'Cancelamento a pedido da pessoa.');
+  e.context.encerrarAtividades27Tarde();
+  const oldUrl = e.context.exportarConfirmados('OFICINA_OLLAMA');
+  const oldSheet = [...e.sheets.values()].find(sheet => oldUrl.endsWith('#gid=' + sheet.getSheetId()));
+  const oldCells = JSON.stringify(oldSheet.cells), before = e.context.readJournal_();
+  const readState = e.context.readState_;
+  let reads = 0;
+  e.context.readState_ = () => { reads++; return readState(); };
+  const report = e.context.exportarListas27Tarde();
+  assert.equal(reads, 1);
+  assert.equal(report.totalAtividades, 7); assert.equal(report.listasGeradas, 7);
+  assert.equal(report.totalInscritos, 1); assert.equal(report.falhas.length, 0); assert.equal(report.parcial, false);
+  assert.deepEqual(Array.from(report.listas, list => list.activityId).sort(), [
+    'OFICINA_BLENDER', 'OFICINA_C', 'OFICINA_GAMEMAKER', 'OFICINA_IA_ALEM_CHAT',
+    'OFICINA_OLLAMA', 'OFICINA_YASMIN_GABRIEL', 'PALESTRA_BIO'
+  ]);
+  for (const list of report.listas) {
+    const sheet = e.sheets.get(list.aba);
+    assert.equal(list.url, 'https://example.org/sheet#gid=' + sheet.getSheetId());
+    assert.deepEqual(sheet.cells[0], ['NOME', 'EMAIL', 'CPF', 'INSCRICAO']);
+    assert.deepEqual(sheet.protections[0].editors, ['ca@example.org']);
+    assert.equal(sheet.protections[0].domain, false);
+    assert.equal(sheet.getLastRow(), list.inscritos + 1);
+  }
+  const ollama = e.sheets.get(report.listas.find(list => list.activityId === 'OFICINA_OLLAMA').aba);
+  assert.deepEqual(ollama.cells[1].slice(0, 3), ['Ana Exemplo', 'ana@example.org', '01234567890']);
+  assert.equal(JSON.stringify(e.context.readJournal_()), JSON.stringify(before));
+  assert.equal(JSON.stringify(oldSheet.cells), oldCells);
+  assert.equal(e.context.exportarListas27Tarde().listasGeradas, 7);
+  assert.equal([...e.sheets.keys()].filter(name => name.startsWith('Lista_')).length, 15);
+  assert.equal(JSON.stringify(oldSheet.cells), oldCells, 'repetição cria novas fotografias');
+});
+
+test('Listas de 27 à tarde registram falha de uma exportação e continuam nas atividades seguintes', () => {
+  const e = environment(); e.installed(); e.context.carregarProgramacaoSeminfo2026();
+  const exportList = e.context.exportarConfirmadosDoEstado_;
+  e.context.exportarConfirmadosDoEstado_ = (state, id) => {
+    if (id === 'OFICINA_BLENDER') throw new Error('Falha temporária na exportação');
+    return exportList(state, id);
+  };
+  const report = e.context.exportarListas27Tarde();
+  assert.equal(report.totalAtividades, 7); assert.equal(report.listasGeradas, 6); assert.equal(report.parcial, true);
+  assert.equal(report.falhas.length, 1); assert.equal(report.falhas[0].activityId, 'OFICINA_BLENDER');
+  assert.match(report.falhas[0].motivo, /Falha temporária/);
+  assert.ok(report.listas.some(list => list.activityId === 'OFICINA_OLLAMA'));
+  assert.ok(report.listas.some(list => list.activityId === 'PALESTRA_BIO'));
+  assert.equal(e.context.tableRows_('Erros').at(-1).CONTEXTO, 'exportar-listas-27-tarde');
+});
+
+test('Listas de 27 à tarde exigem a conta instaladora antes de exportar dados', () => {
+  const e = environment(); e.installed(); e.context.carregarProgramacaoSeminfo2026();
+  const before = [...e.sheets.keys()];
+  e.context.Session.getEffectiveUser = () => ({getEmail: () => 'outra@example.org'});
+  assert.throws(() => e.context.exportarListas27Tarde(), /conta que instalou/);
+  assert.deepEqual([...e.sheets.keys()], before);
+});
+
 test('Rótulo antigo resolve ID permanente, e identidade vem exclusivamente do e-mail nativo', () => {
   const e = environment(); e.begin();
   const input = e.response('INSCRICAO', { answers: { CPF: '012.345.678-90' }, email: ' Pessoa@Example.org ' });

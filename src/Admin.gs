@@ -27,6 +27,7 @@ function onOpen() {
     .addItem('Consultar ocupação', 'menuOcupacao')
     .addItem('Reavaliar inscrições recusadas / corrigir capacidade', 'menuReavaliarInscricoes')
     .addItem('Exportar lista confirmada', 'menuExportar')
+    .addItem('Gerar listas de terça à tarde (27/10)', 'menuExportarListas27Tarde')
     .addSeparator()
     .addItem('Abrir inscrições', 'abrirInscricoes')
     .addItem('Encerrar inscrições', 'encerrarInscricoes')
@@ -262,6 +263,46 @@ function salvarAtividade(activity) {
   return saved;
 }
 
+/** Mesmo período para o encerramento e a exportação em lote. */
+function atividades27Tarde_(state) {
+  var beginning = Date.parse('2026-10-27T12:00:00-03:00');
+  var end = Date.parse('2026-10-27T18:00:00-03:00');
+  return Object.values(state.activities).filter(function (activity) {
+    var start = Date.parse(activity.start);
+    return ['palestra', 'oficina'].indexOf(activity.type) >= 0 && start >= beginning && start < end;
+  }).sort(function (a, b) { return Date.parse(a.start) - Date.parse(b.start) || a.id.localeCompare(b.id); });
+}
+
+/** Encerra palestras e oficinas com início em 27/10/2026, das 12h às 18h de São Paulo. */
+function encerrarAtividades27Tarde() {
+  requireInstaller_(false, true);
+  var result = withLock_(function () {
+    var journal = readJournal_(), closed = [], unchanged = [];
+    atividades27Tarde_(journal.state).forEach(function (activity) {
+      if (activity.status !== 'aberta') {
+        unchanged.push({id: activity.id, situacao: activity.status});
+        return;
+      }
+      var updated = Object.assign({}, activity, {status: 'encerrada'});
+      commitOperationLocked_(journal, {key: 'ADMIN:ENCERRAR_27_TARDE:' + Utilities.getUuid(), kind: 'CATALOG',
+        at: new Date().toISOString(), activity: updated,
+        reason: 'Encerramento das palestras e oficinas de 27/10/2026 à tarde pela organização.'});
+      journal = readJournal_();
+      closed.push(activity.id);
+    });
+    if (closed.length) rebuildViewsLocked_(journal);
+    return {data: '2026-10-27', inicio: '12:00', fimExclusivo: '18:00', fuso: 'America/Sao_Paulo',
+      encerradas: closed, jaBloqueadas: unchanged};
+  }, false, false, true);
+  try { result.atualizacaoFormularios = refreshFormsSafely_(undefined, true); }
+  catch (error) {
+    recordError_('encerrar-27-tarde', '', error);
+    result.atualizacaoFormularios = {adiada: true, motivo: safeError_(error)};
+  }
+  console.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
 function cancelarInscricaoAdministrativa(cpf, activityId, reason) {
   requireInstaller_(false, true);
   cpf = SemDomain.normalizeCpf(cpf);
@@ -444,7 +485,10 @@ function menuReavaliarInscricoes() {
 
 function consultarInscritos(activityId) {
   requireInstaller_();
-  var state = readState_();
+  return inscritosDaAtividade_(readState_(), activityId);
+}
+
+function inscritosDaAtividade_(state, activityId) {
   if (!state.activities[activityId]) throw new Error('Atividade inexistente.');
   var rows = [];
   Object.values(state.registrations).filter(function(r) { return r.activityId === activityId && r.status === 'confirmada'; }).forEach(function(r) {
@@ -462,8 +506,12 @@ function consultarInscritos(activityId) {
 /** Exporta para uma nova aba privada; a planilha não é compartilhada com participantes. */
 function exportarConfirmados(activityId) {
   requireInstaller_();
-  var rows = consultarInscritos(activityId), name = 'Lista_' + activityId + '_' + Utilities.formatDate(new Date(), 'America/Sao_Paulo', 'yyyyMMdd_HHmmss') + '_' + Utilities.getUuid().slice(0, 4);
-  var teams = readState_().activities[activityId].capacityUnit === 'equipes';
+  return exportarConfirmadosDoEstado_(readState_(), activityId).url;
+}
+
+function exportarConfirmadosDoEstado_(state, activityId) {
+  var rows = inscritosDaAtividade_(state, activityId), name = 'Lista_' + activityId + '_' + Utilities.formatDate(new Date(), 'America/Sao_Paulo', 'yyyyMMdd_HHmmss') + '_' + Utilities.getUuid().slice(0, 4);
+  var teams = state.activities[activityId].capacityUnit === 'equipes';
   var headers = teams ? ['EQUIPE', 'TIPO_EQUIPE', 'NOME', 'PAPEL', 'CPF', 'TURMA', 'TELEFONE', 'INSCRICAO'] : ['NOME', 'EMAIL', 'CPF', 'INSCRICAO'];
   writeTable_(name, headers, rows.map(function(p) { return teams ? [p.equipe, p.tipoEquipe, p.nome, p.papel, p.cpf, p.turma, p.telefone, p.inscricao] : [p.nome, p.email, p.cpf, p.inscricao]; }));
   var sheet = db_().getSheetByName(name);
@@ -472,7 +520,30 @@ function exportarConfirmados(activityId) {
   protection.removeEditors(protection.getEditors().filter(function(user) { return user.getEmail().toLowerCase() !== props_().getProperty('SEMINFO_INSTALLER'); }));
   if (protection.canDomainEdit()) protection.setDomainEdit(false);
   sheet.autoResizeColumns(1, headers.length);
-  return db_().getUrl() + '#gid=' + sheet.getSheetId();
+  return {aba: name, inscritos: rows.length, url: db_().getUrl() + '#gid=' + sheet.getSheetId()};
+}
+
+/** Uma fotografia do livro para todas as listas, inclusive de atividades encerradas ou vazias. */
+function exportarListas27Tarde() {
+  requireInstaller_();
+  var state = withLock_(function () { return readState_(); });
+  var activities = atividades27Tarde_(state), lists = [], errors = [];
+  activities.forEach(function (activity) {
+    try {
+      var exported = exportarConfirmadosDoEstado_(state, activity.id);
+      lists.push({activityId: activity.id, titulo: activity.title, aba: exported.aba,
+        inscritos: exported.inscritos, url: exported.url});
+    } catch (error) {
+      recordError_('exportar-listas-27-tarde', activity.id, error);
+      errors.push({activityId: activity.id, motivo: safeError_(error)});
+    }
+  });
+  var result = {data: '2026-10-27', inicio: '12:00', fimExclusivo: '18:00', fuso: 'America/Sao_Paulo',
+    totalAtividades: activities.length, listasGeradas: lists.length,
+    totalInscritos: lists.reduce(function (total, list) { return total + list.inscritos; }, 0),
+    listas: lists, falhas: errors, parcial: errors.length > 0};
+  console.log(JSON.stringify(result, null, 2));
+  return result;
 }
 
 function carregarDemonstracao() {
@@ -508,6 +579,7 @@ function menuSalvarAtividade() {
   if (text !== null) SpreadsheetApp.getUi().alert(JSON.stringify(salvarAtividade(JSON.parse(text)), null, 2));
 }
 function menuExportar() { var id = promptText_('Exportar lista', 'ID da atividade:'); if (id !== null) SpreadsheetApp.getUi().alert(exportarConfirmados(id)); }
+function menuExportarListas27Tarde() { SpreadsheetApp.getUi().alert(JSON.stringify(exportarListas27Tarde(), null, 2)); }
 function menuCancelar() {
   var text = promptText_('Cancelamento administrativo', 'Cole JSON: {"cpf":"...","activityId":"...","reason":"justificativa"}');
   if (text !== null) { var p = JSON.parse(text); SpreadsheetApp.getUi().alert(JSON.stringify(cancelarInscricaoAdministrativa(p.cpf, p.activityId, p.reason))); }
