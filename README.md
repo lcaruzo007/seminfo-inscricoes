@@ -112,6 +112,8 @@ Cancelamentos administrativos, cadastro de atividades, consulta de ocupação e 
 
 A coluna **SITUACAO** de `Atividades` e **Consultar ocupação** mostram a situação atual das inscrições: `lotada` quando todas as vagas estão ocupadas, `encerrada` quando o recebimento global ou a atividade está encerrado e `aberta` quando há vagas e a abertura está autorizada. Cadastros `pendente` e `cancelada` mantêm essas situações. Uma vaga liberada volta a indicar `aberta` somente se o recebimento continuar autorizado. A CSP conta equipes, não integrantes. O cadastro oficial continua separado; `consultarOcupacao` também informa `situacaoCadastro`. Para aplicar essa correção em uma instalação existente, copie `Persistence.gs` e `Admin.gs`, salve e use **Atualizar opções dos Forms** para reconstruir a consulta.
 
+Para corrigir falhas recorrentes de `manutencaoPeriodica` por tempo máximo, atualize `Domain.gs`, `Persistence.gs`, `Forms.gs`, `Notifications.gs` e `Admin.gs` e salve todos no Apps Script. A manutenção passa a dividir recuperação, Forms e e-mails em etapas com prazo, retoma as opções em lotes e evita trabalho simultâneo ou repetido. Execute `manutencaoPeriodica` e acompanhe as durações em **Execuções**. O [manual](docs/MANUAL.md#falhas-por-tempo-máximo-na-manutenção) explica a aplicação e a retomada na instalação existente.
+
 ## Programação do evento
 
 | Data | Programação de referência |

@@ -21,8 +21,8 @@ var SEMINFO_FORM_TEXT_ = Object.freeze({
 var SEMINFO_FORM_METADATA_ = {};
 
 /** Um formulário pode representar uma atividade fixa ou apresentar a seleção. */
-function getRegistrationFormDefinitions_() {
-  var cfg = getConfig_();
+function getRegistrationFormDefinitions_(config) {
+  var cfg = config || getConfig_();
   var raw = String(cfg.FORMULARIOS_INSCRICAO_JSON || '[]').trim() || '[]';
   var definitions;
   try { definitions = JSON.parse(raw); }
@@ -76,9 +76,9 @@ function getRegistrationFormDefinitions_() {
 }
 
 /** Inventário das origens configuradas. Não cria nem modifica formulários. */
-function getFormSources_() {
-  var cfg = getConfig_();
-  var sources = getRegistrationFormDefinitions_().filter(function (entry) { return !!entry.id; }).map(function (entry) {
+function getFormSources_(config) {
+  var cfg = config || getConfig_();
+  var sources = getRegistrationFormDefinitions_(cfg).filter(function (entry) { return !!entry.id; }).map(function (entry) {
     return {kind: 'INSCRICAO', id: entry.id, activityId: entry.activityId, title: entry.title, items: entry.items};
   });
   var cancellationId = String(cfg.ID_FORM_CANCELAMENTO ||
@@ -301,8 +301,8 @@ function singleChoiceItem_(item) {
 function storedFormItemId_(form, kind, key) {
   var props = PropertiesService.getScriptProperties();
   var stored = props.getProperty(formItemProperty_(kind, key, form));
-  var cfg = getConfig_();
-  var legacyOrigin = props.getProperty('SEMINFO_ID_FORM_' + kind) || cfg['ID_FORM_' + kind];
+  if (stored) return stored;
+  var legacyOrigin = props.getProperty('SEMINFO_ID_FORM_' + kind) || getConfig_()['ID_FORM_' + kind];
   if (!stored && (kind !== 'INSCRICAO' && kind !== 'CANCELAMENTO' || legacyOrigin === form.getId())) {
     stored = props.getProperty(formItemProperty_(kind, key));
   }
@@ -546,8 +546,9 @@ function verifyForms_(activate) {
   return reports;
 }
 
-/** Called under ScriptLock, using authoritative registrations, never response count. */
-function refreshFormsLocked_(state) {
+/** Estado lido sob lock; chamadas ao Forms executadas fora dele, sob marcador VIEW. */
+function refreshFormsLocked_(state, deadline) {
+  var executionDeadline = Number(deadline) || Infinity;
   var sources = getFormSources_();
   if (!sources.some(function (source) { return source.kind === 'INSCRICAO'; })) return {available: 0, total: 0, issues: ['Formulários ainda não instalados.']};
   var activities = Object.keys(state.activities || {}).map(function (id) { return state.activities[id]; });
@@ -564,22 +565,33 @@ function refreshFormsLocked_(state) {
   var available = activities.filter(function (activity) {
     return activity.capacityUnit !== 'equipes' && activity.status === 'aberta' && (confirmedCount[activity.id] || 0) < Number(activity.capacity);
   });
-  var entries = sources.map(function (source) { return {source: source, form: openFormWithDriveRetry_(source.id)}; });
-  var issues = [];
+  var entries = [], issues = [];
   // A verificação termina para todas as origens antes de abrir qualquer uma.
   // Uma origem insegura revoga a ativação global e nunca reabre a próxima.
-  entries.forEach(function (entry) {
+  for (var index = 0; index < sources.length; index++) {
+    if (Date.now() >= executionDeadline - 30000) {
+      if (issues.length) break;
+      return {available: available.length, total: activities.length, issues: [], adiados: sources.length, adiada: true, fase: 'verificacao'};
+    }
+    var entry = {source: sources[index], form: openFormWithDriveRetry_(sources[index].id)};
+    entries.push(entry);
     try { assertVerifiedEmail_(entry.form); preflightForm_(entry.source.kind, entry.form, entry.source); assertInstalledFormItems_(entry.source, entry.form); }
     catch (error) { issues.push(String(error.message || error)); }
-  });
+  }
   if (issues.length) {
-    entries.forEach(function (entry) { setFormReceiving_(entry.form, false); });
+    sources.forEach(function (source, index) { setFormReceiving_(entries[index] ? entries[index].form : openFormWithDriveRetry_(source.id), false); });
     throw new Error(issues.join('\n'));
   }
   var activated = PropertiesService.getScriptProperties().getProperty('SEMINFO_FORMS_ACTIVATED') === 'true';
   var availableIds = {};
   available.forEach(function (activity) { availableIds[activity.id] = true; });
-  entries.forEach(function (entry) {
+  var cursor = Number(props_().getProperty('SEMINFO_FORM_REFRESH_INDEX') || 0);
+  if (!Number.isInteger(cursor) || cursor < 0) cursor = 0;
+  var updated = 0, maximum = executionDeadline === Infinity ? entries.length : Math.min(3, entries.length);
+  for (var offset = 0; offset < maximum && Date.now() < executionDeadline - 30000; offset++) {
+    var currentIndex = (cursor + offset) % entries.length, entry = entries[currentIndex];
+    // Uma falha repete esta origem; sucessos continuam pela próxima na rodada seguinte.
+    props_().setProperty('SEMINFO_FORM_REFRESH_INDEX', String(currentIndex));
     var source = entry.source, form = entry.form;
     var trusted = !!PropertiesService.getScriptProperties().getProperty('SEMINFO_VERIFIED_SINCE_' + form.getId());
     if (source.kind === 'INSCRICAO') {
@@ -598,8 +610,11 @@ function refreshFormsLocked_(state) {
       setFormClosedMessage_(form, 'O cancelamento ainda não está disponível. Consulte o Centro Acadêmico Alan Turing.');
       setFormReceiving_(form, activated && trusted && individualActivities.length > 0);
     }
-  });
-  return {available: available.length, total: activities.length, issues: []};
+    updated++;
+    props_().setProperty('SEMINFO_FORM_REFRESH_INDEX', String((currentIndex + 1) % entries.length));
+  }
+  return {available: available.length, total: activities.length, issues: [], atualizados: updated,
+    adiados: entries.length - updated, parcial: updated < entries.length, adiada: updated < entries.length};
 }
 
 function setFormClosedMessage_(form, message) {
@@ -706,11 +721,11 @@ function aoEnviarCancelamento(e) { runSeminfoFormTrigger_('CANCELAMENTO', e); }
 function runSeminfoFormTrigger_(kind, event) {
   if (!event || !event.source || !event.response) throw new Error('Use um gatilho instalável de envio no Google Forms. Não execute esta função sem evento.');
   var deadline = Date.now() + 270000;
-  try { processFormResponse_(kind, event.source, event.response); }
+  try { processFormResponse_(kind, event.source, event.response, false, deadline - 45000); }
   finally {
     postProcessing_(deadline);
     // No envio, confere somente a aba do próprio Form; o periódico cobre as demais.
-    try { nomearAbasDeRespostas_([event.source.getId()]); }
+    try { if (Date.now() < deadline - 30000) nomearAbasDeRespostas_([event.source.getId()]); }
     catch (error) { recordError_('nomear-abas-respostas', event.source.getId(), error); }
   }
 }

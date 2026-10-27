@@ -967,14 +967,16 @@ function nomearAbasDeRespostas_(formIds) {
   var cspSource = null;
   if (importConfig && importConfig !== '{}') {
     cspSource = getCspImportSource_();
-    var activity = readState_().activities[cspSource.activityId];
-    var scheduledActivity = programacaoSeminfo2026_().filter(function (entry) { return entry.id === cspSource.activityId; })[0];
-    var cspTitle = activity && activity.title || scheduledActivity && scheduledActivity.title || '';
-    var existingSource = sources.filter(function (source) { return source.id === cspSource.formId; })[0];
-    if (existingSource) {
-      existingSource.title = cspTitle || existingSource.title;
-    } else {
-      sources.push({kind: 'IMPORTACAO_CSP', id: cspSource.formId, title: cspTitle});
+    if (!formIds || formIds.indexOf(cspSource.formId) >= 0) {
+      var activity = readState_().activities[cspSource.activityId];
+      var scheduledActivity = programacaoSeminfo2026_().filter(function (entry) { return entry.id === cspSource.activityId; })[0];
+      var cspTitle = activity && activity.title || scheduledActivity && scheduledActivity.title || '';
+      var existingSource = sources.filter(function (source) { return source.id === cspSource.formId; })[0];
+      if (existingSource) {
+        existingSource.title = cspTitle || existingSource.title;
+      } else {
+        sources.push({kind: 'IMPORTACAO_CSP', id: cspSource.formId, title: cspTitle});
+      }
     }
   }
   if (formIds) sources = sources.filter(function (source) { return formIds.indexOf(source.id) >= 0; });
@@ -1041,8 +1043,22 @@ function nomearAbasDeRespostas_(formIds) {
   return result;
 }
 
-function sincronizarNomesAbasDeRespostas_() {
-  return nomearAbasDeRespostas_();
+function sincronizarNomesAbasDeRespostas_(deadline) {
+  if (!deadline) return nomearAbasDeRespostas_();
+  if (Date.now() >= deadline - 30000) return {adiada: true};
+  var config = getConfig_(), sources = getFormSources_(config);
+  var importConfig = String(config.IMPORTACAO_CSP_JSON || '').trim();
+  if (importConfig && importConfig !== '{}') {
+    var cspId = getCspImportSource_().formId;
+    if (!sources.some(function(source) { return source.id === cspId; })) sources.push({id: cspId});
+  }
+  if (!sources.length || Date.now() >= deadline - 30000) return {adiada: true};
+  var cursor = Number(props_().getProperty('SEMINFO_RESPONSE_SHEET_INDEX') || 0);
+  if (!Number.isInteger(cursor) || cursor < 0) cursor = 0;
+  var index = cursor % sources.length;
+  // Avança mesmo se uma origem falhar, para que as demais também sejam atendidas.
+  props_().setProperty('SEMINFO_RESPONSE_SHEET_INDEX', String((index + 1) % sources.length));
+  return nomearAbasDeRespostas_([sources[index].id]);
 }
 
 function protectResetBackup_(copy) {

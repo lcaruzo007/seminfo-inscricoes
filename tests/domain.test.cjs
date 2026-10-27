@@ -51,6 +51,33 @@ function submit(state, input) {
   return { state: next, outcome, operation };
 }
 
+test('Replay sem cópias do estado mantém decisões, trocas, identidade e entradas independentes', () => {
+  let state = catalog(activity('A'), activity('B'));
+  state = submit(state, request('A')).state;
+  state = submit(state, request('B', { authorizeSwap: true })).state;
+  const operations = plain(Object.values(state.operations)), before = JSON.stringify(operations);
+  const replayed = D.replayOperations(operations);
+  assert.deepEqual(plain(replayed), plain(state));
+  assert.equal(JSON.stringify(operations), before);
+  replayed.participants[CPF].name = 'Nome alterado na projeção';
+  replayed.activities.A.title = 'Título alterado na projeção';
+  assert.equal(JSON.stringify(operations), before, 'o replay não compartilha objetos mutáveis com o livro');
+  assert.equal(D.occupancy(replayed, 'A'), 0);
+  assert.equal(D.occupancy(replayed, 'B'), 1);
+});
+
+test('Replay ainda valida cada estado intermediário antes de aceitar operações posteriores', () => {
+  let state = catalog(activity('A'));
+  const confirmed = submit(state, request('A')); state = confirmed.state;
+  const invalid = plain(confirmed.operation);
+  invalid.key = 'invalid-duplicate';
+  invalid.outcome.changes[0].registration.id = 'invalid-registration';
+  const laterCancel = { key: 'later-cancel', kind: 'REQUEST', at: AT, outcome: {
+    changes: [{ type: 'CANCEL', registrationId: 'invalid-registration', status: 'cancelada', reason: 'Cancelamento posterior.' }]
+  } };
+  assert.throws(() => D.replayOperations([...Object.values(state.operations), invalid, laterCancel]), /duplicada/);
+});
+
 test('Programação final altera dois horários em lote e preserva inscrições e decisões originais', () => {
   let state = catalog(activity('A'), activity('B', {start: '2026-10-19T16:00:00-03:00', end: '2026-10-19T18:00:00-03:00'}));
   const first = submit(state, request('A')); state = first.state;

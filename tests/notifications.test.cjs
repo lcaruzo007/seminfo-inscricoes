@@ -108,6 +108,26 @@ function operation(key = 'FORM:RESPOSTA1', code = 'confirmed', extraOutcome = {}
   };
 }
 
+test('Prazo reserva a confirmação do envio e deixa mensagens seguintes pendentes para retomada', () => {
+  const env = setup();
+  env.sync([operation('FORM:1'), operation('FORM:2')]);
+  let now = Date.now();
+  env.context.Date = class extends Date {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  };
+  const send = env.context.MailApp.sendEmail;
+  env.context.MailApp.sendEmail = message => { send(message); now += 45000; };
+  const first = env.context.processarNotificacoes(now + 60000);
+  assert.equal(first.enviadas, 1);
+  assert.deepEqual(env.rows().map(row => row.SITUACAO), ['enviada', 'pendente']);
+  assert.equal(env.rows()[1].TENTATIVAS, 0);
+  env.context.MailApp.sendEmail = send;
+  assert.equal(env.context.processarNotificacoes(now + 1000).tentativas, 0);
+  assert.equal(env.context.processarNotificacoes(now + 60000).enviadas, 1);
+  assert.equal(env.sent.length, 2);
+});
+
 test('fila é idempotente e preserva estado enviada; confirmação contém dados e nenhum CPF', () => {
   const env = setup();
   assert.equal(env.sync([operation(), operation()]), 1);

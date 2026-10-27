@@ -315,9 +315,19 @@ var SemDomain = (function () {
   }
 
   function applyOperation(state, operation) {
+    return applyOperationToState(normalizedState(state), operation);
+  }
+
+  /** Replay usa um estado privado; não copia todo o histórico a cada registro. */
+  function replayOperations(operations) {
+    var state = createState();
+    operations.forEach(function (operation) { applyOperationToState(state, operation); });
+    return state;
+  }
+
+  function applyOperationToState(next, operation) {
     if (!operation || typeof operation !== 'object') throw new Error('Operação inválida.');
     var key = identifier(operation.key, 'Chave da operação');
-    var next = normalizedState(state);
     if (owns(next.operations, key)) return next;
 
     if (operation.kind === 'REQUEST') {
@@ -495,6 +505,7 @@ var SemDomain = (function () {
     decide: decide,
     decideTeam: decideTeam,
     validateState: validateState,
-    applyOperation: applyOperation
+    applyOperation: applyOperation,
+    replayOperations: replayOperations
   };
 })();

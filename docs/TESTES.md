@@ -2,16 +2,18 @@
 
 ## Executados localmente
 
-Em 26/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **222 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
+Em 27/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **235 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
 
 | Suíte | Testes | Evidência |
 |---|---:|---|
-| `tests/domain.test.cjs` | 32 | Regras puras de CPF, identidade, vagas, intervalos, trocas, replay e administração |
-| `tests/notifications.test.cjs` | 20 | Cota incluindo CC, deduplicação, leases, falhas, modelos, prazo e duplicação após envio interrompido |
-| `tests/forms-install.test.cjs` | 155 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
-| `tests/persistence.test.cjs` | 15 | Injeção de falhas antes/depois do append, recuperação, corrupção e releitura sob lock simulado |
+| `tests/domain.test.cjs` | 34 | Regras puras de CPF, identidade, vagas, intervalos, trocas, replay e administração |
+| `tests/notifications.test.cjs` | 21 | Cota incluindo CC, deduplicação, leases, falhas, modelos, prazo e duplicação após envio interrompido |
+| `tests/forms-install.test.cjs` | 163 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
+| `tests/persistence.test.cjs` | 17 | Injeção de falhas antes/depois do append, recuperação, corrupção e releitura sob lock simulado |
 
 As suítes usam `node:test`/`assert`, `vm` e `crypto`, todos nativos do Node, e carregam os módulos de `src/`. Execute cada arquivo na raiz do projeto conforme o [README](../README.md). São apropriados também para ambientes que não permitem subprocessos do executor `node --test`. O empacotamento gera `dist/test-results.txt` com a saída da execução final; os relatórios e pacotes de `dist/` ficam fora do Git.
+
+A regressão de tempo máximo usa relógio simulado: confere prazos compartilhados entre recuperação, Forms e e-mails; adia a renomeação quando falta tempo; impede duas manutenções de trabalhar juntas e retoma uma reserva expirada. Exercita Forms lentos, varredura circular sem perdas/duplicações, aplicação das opções em lotes e nova tentativa após erro do serviço. Uma conferência incompleta não abre nenhuma origem. O marcador das visões só avança após sucesso da fila e do flush, e a manutenção pula reconstruções já concluídas. O replay preserva trocas e não compartilha objetos com o livro; continua rejeitando um estado intermediário inválido. Nenhuma dessas simulações mede a duração dos serviços reais do Google.
 
 A atualização de reinício cobre exclusão de atividade, recusa quando há inscrições, manutenção do Form fixo fechado, nomes explícitos, migração de vínculos, cadastro da programação sem inventar dados, limpeza de livro/fila/respostas/abas nativas/equipes, backups ocultos protegidos, manutenção dos IDs e perguntas, bloqueio durante limpeza, falha de backup, retomada após exclusão parcial, recusa durante envio de e-mail e invalidação de importação iniciada antes do reinício. Ainda é necessária homologação em uma cópia no Google para confirmar as permissões reais e o comportamento das abas vinculadas.
 

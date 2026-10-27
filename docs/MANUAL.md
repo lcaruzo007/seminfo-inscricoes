@@ -237,7 +237,19 @@ Na [tabela oficial de cotas](https://developers.google.com/apps-script/guides/se
 
 Antes da abertura, execute `conferirSistema` para ler a cota efetiva com `MailApp.getRemainingDailyQuota()`, confirme a edição/tipo da conta com o administrador e consulte novamente a tabela oficial. Para 200 confirmações com CC em uma conta pessoal, a demanda de 400 destinatários ultrapassa a cota diária; a fila continuará nos períodos seguintes. Dimensione a conta e os lotes antes da divulgação.
 
-O processamento de recuperação tenta respeitar um orçamento total de 4,5 minutos por execução periódica; chamadas individuais lentas aos serviços ainda podem causar interrupção e serão recuperadas. A varredura completa dos Forms e replay do livro crescem com o volume: faça teste de carga na conta real e acompanhe duração/pendências antes de ampliar o público. A arquitetura é adequada a um evento acadêmico com volume validado; não oferece SLA ou capacidade ilimitada. Não reduza as regras de integridade para contornar cota/tempo.
+O processamento de recuperação tenta respeitar um orçamento total de 4,5 minutos por execução periódica; chamadas individuais lentas aos serviços ainda podem causar interrupção e serão recuperadas. A varredura completa dos Forms e replay do livro crescem com o volume: faça teste de carga na conta real e acompanhe duração/pendências antes de ampliar o público.
+
+### Falhas por tempo máximo na manutenção
+
+Para aplicar a correção de `Exceeded maximum execution time`, substitua o conteúdo completo de **`Domain.gs`, `Persistence.gs`, `Forms.gs`, `Notifications.gs` e `Admin.gs`** no projeto Apps Script existente e salve todos antes de executar. A atualização usa os gatilhos já instalados. Execute `manutencaoPeriodica` com a conta instaladora e acompanhe **Execuções** no editor; o registro mostra o início, a duração acumulada e o resultado de cada etapa. A correção preserva o livro oficial, as respostas, as inscrições e a fila de e-mails.
+
+A manutenção reserva até dois minutos para recuperar solicitações, até 90 segundos para sincronizar visões/Forms e o tempo seguinte para e-mails, dentro do orçamento compartilhado de 270 segundos. As etapas deixam margem antes de iniciar outra chamada ou envio. A renomeação das abas ocorre depois da fila, quando houver tempo, para uma origem por rodada. A sincronização confere todas as origens antes de abrir qualquer uma e aplica as opções a até três Forms por rodada, continuando pelo cursor na execução seguinte. `adiada`, `parcial` e `varreduraParcial` indicam retomada, sem marcar respostas pendentes como processadas. **Atualizar opções dos Forms**, pelo menu, continua disponível para sincronizar todas as origens e reconstruir as visões manualmente.
+
+O replay verifica os selos e cada estado intermediário, mas deixa de copiar todo o histórico a cada registro. Perguntas com IDs instalados deixam de reler `Configuracoes` a cada acesso. Na manutenção, as visões e a fila só são reconstruídas quando o livro mudou; a marca de conclusão é salva depois da confirmação das escritas. A atualização manual continua reconstruindo as visões mesmo sem novas operações.
+
+Uma execução periódica ativa impede outra manutenção de trabalhar em paralelo, mantendo o lock livre durante chamadas aos serviços. Se ela for interrompida sem liberar seu marcador, a reserva expira em nove minutos contados do início. O marcador de uma atualização anterior dos Forms continua obedecendo à expiração existente de oito minutos. Após uma interrupção, deixe a execução seguinte retomar pelo livro e pelos cursores.
+
+Esses limites são cooperativos: Apps Script não permite interromper uma chamada individual ao Forms, Sheets ou MailApp que já começou. Erros temporários do serviço ainda podem aparecer e serão registrados para nova tentativa. A duração real e a redução dos avisos precisam ser conferidas na conta Google após a atualização.
 
 ## Testes
 

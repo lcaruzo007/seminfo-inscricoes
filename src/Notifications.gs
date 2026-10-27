@@ -203,7 +203,8 @@ function processarNotificacoes(deadline) {
   var summary = { enviadas: 0, adiadas: 0, tentativas: 0 };
   // Evita ultrapassar 6 minutos mesmo que os serviços estejam lentos.
   var executionDeadline = Math.min(Date.now() + 4 * 60 * 1000, Number(deadline) || Infinity);
-  for (var index = 0; index < maximum && Date.now() < executionDeadline; index++) {
+  // Um envio inclui claim, MailApp e confirmação durável; não comece no fim do prazo.
+  for (var index = 0; index < maximum && Date.now() < executionDeadline - 30000; index++) {
     var job = withLock_(function () { return claimNotificationLocked_(); }, false, false, true);
     if (!job) break;
     summary.tentativas++;

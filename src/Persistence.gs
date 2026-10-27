@@ -23,8 +23,7 @@ function readJournal_() {
       throw new Error('Livro oficial inválido na linha ' + (index + 2) + '. Processamento bloqueado; restaure o registro a partir de backup/histórico de versões.');
     }
   });
-  var state = SemDomain.createState();
-  operations.forEach(function(op) { state = SemDomain.applyOperation(state, op); });
+  var state = SemDomain.replayOperations(operations);
   SemDomain.validateState(state);
   return {operations: operations, byKey: byKey, state: state, head: previous};
 }
@@ -97,6 +96,9 @@ function rebuildViewsLocked_(journal) {
     return [op.key, op.at, op.kind, op.kind === 'REQUEST' ? op.request.protocol + ': ' + op.outcome.code : (op.reason || (op.activity && op.activity.id) || String(op.accepting))];
   }));
   syncNotificationQueueLocked_(journal.operations);
+  // Só marca depois de concluir todas as visões e a fila. Falhas exigem nova reconstrução.
+  SpreadsheetApp.flush();
+  props_().setProperty('SEMINFO_VIEWS_HEAD', journal.head);
 }
 
 function enrichOutcome_(state, request, outcome) {
@@ -111,7 +113,7 @@ function enrichOutcome_(state, request, outcome) {
   return outcome;
 }
 
-function processFormResponse_(kind, form, response, deferViews) {
+function processFormResponse_(kind, form, response, deferViews, deadline) {
   var request;
   try {
     request = parseFormRequest_(kind, form, response); // Valida VERIFIED pela API antes de qualquer vínculo.
@@ -129,7 +131,7 @@ function processFormResponse_(kind, form, response, deferViews) {
       return operation.outcome;
     }, false, false, true);
     // A sincronização reconstrói as visões uma única vez, com o estado mais recente.
-    if (deferViews !== true) refreshFormsSafely_();
+    if (deferViews !== true) refreshFormsSafely_(deadline);
     return outcome;
   } catch (error) {
     var key = request ? request.key : (form && response ? form.getId() + ':' + response.getId() : '');
@@ -155,29 +157,37 @@ function postProcessing_(deadline) {
   catch (error) { recordError_('notificacoes', '', error); return {erro: safeError_(error)}; }
 }
 
-/** Varredura completa da caixa de entrada dos dois Forms; nenhum cursor pode pular respostas. */
-function processarSolicitacoesPendentes(deadline) {
+/** Varredura circular de todas as origens; cursores não dão respostas como processadas. */
+function processarSolicitacoesPendentes(deadline, deferRefresh) {
+  var started = Date.now(), finalDeadline = Math.min(started + 270000, Number(deadline) || Infinity);
   requireInstaller_(false, true);
-  var config = getConfig_(), started = Date.now(), pending = [], quarantined = 0, processed = readJournal_().byKey;
-  var executionDeadline = Math.min(started + 210000, Number(deadline) || Infinity);
-  var sources = getFormSources_(), cursor = Number(props_().getProperty('SEMINFO_SCAN_FORM_INDEX') || 0), scanned = 0, scanErrors = 0;
-  for (var offset = 0; offset < sources.length && Date.now() < executionDeadline - 30000; offset++) {
+  var config = getConfig_(), pending = [], quarantined = 0;
+  var executionDeadline = deferRefresh === true ? finalDeadline : Math.min(started + 150000, finalDeadline - 60000);
+  var scanDeadline = Math.min(started + 60000, executionDeadline - 30000);
+  var processed = Date.now() < scanDeadline - 15000 ? readJournal_().byKey : {};
+  var sources = getFormSources_(config), cursor = Number(props_().getProperty('SEMINFO_SCAN_FORM_INDEX') || 0), scanned = 0, scanErrors = 0, partialScan = false;
+  if (!Number.isInteger(cursor) || cursor < 0) cursor = 0;
+  for (var offset = 0; offset < sources.length && Date.now() < scanDeadline - 15000; offset++) {
     var index = (cursor + offset) % sources.length, source = sources[index];
     try {
       var form = openFormWithDriveRetry_(source.id);
       assertVerifiedEmail_(form);
       var responses = form.getResponses();
       var responseCursorKey = 'SEMINFO_SCAN_RESPONSE_INDEX_' + form.getId();
-      var responseCursor = Number(props_().getProperty(responseCursorKey) || 0), nextResponseIndex = responseCursor;
+      var responseCursor = Number(props_().getProperty(responseCursorKey) || 0);
       if (!Number.isInteger(responseCursor) || responseCursor < 0) responseCursor = 0;
-      for (var responseOffset = 0; responseOffset < responses.length && Date.now() < executionDeadline - 30000; responseOffset++) {
+      responseCursor = responses.length ? responseCursor % responses.length : 0;
+      var nextResponseIndex = responseCursor, inspected = 0;
+      for (var responseOffset = 0; responseOffset < responses.length && Date.now() < scanDeadline - 15000; responseOffset++) {
         var ri = (responseCursor + responseOffset) % responses.length, response = responses[ri];
+        inspected++;
         nextResponseIndex = (ri + 1) % responses.length;
         if (processed[form.getId() + ':' + response.getId()]) continue;
         if (!isEligibleFormResponse_(form, response)) { quarantined++; continue; }
         pending.push({kind: source.kind, form: form, response: response});
         if (pending.length >= config.MAX_SOLICITACOES_POR_EXECUCAO) break;
       }
+      if (inspected < responses.length) partialScan = true;
       props_().setProperty(responseCursorKey, String(nextResponseIndex));
     } catch (error) { scanErrors++; recordError_('varredura-form', source.id, error); }
     scanned++;
@@ -186,24 +196,32 @@ function processarSolicitacoesPendentes(deadline) {
   }
   pending.sort(function(a, b) { return a.response.getTimestamp().getTime() - b.response.getTimestamp().getTime(); });
   var done = 0, failed = 0;
-  for (var i = 0; i < pending.length && done + failed < config.MAX_SOLICITACOES_POR_EXECUCAO && Date.now() < executionDeadline; i++) {
+  for (var i = 0; i < pending.length && done + failed < config.MAX_SOLICITACOES_POR_EXECUCAO && Date.now() < executionDeadline - 30000; i++) {
     try { processFormResponse_(pending[i].kind, pending[i].form, pending[i].response, true); done++; }
     catch (_) { failed++; }
   }
-  refreshFormsSafely_();
-  return {processadas: done, falhas: failed, pendentesNoLote: pending.length - done, loteCheio: pending.length >= config.MAX_SOLICITACOES_POR_EXECUCAO, respostasEmQuarentena: quarantined, formulariosVarridos: scanned, errosDeVarredura: scanErrors, varreduraParcial: scanned < sources.length};
+  var refresh = deferRefresh === true ? {adiada: true, motivo: 'Sincronização em etapa separada.'} : refreshFormsSafely_(finalDeadline);
+  return {processadas: done, falhas: failed, pendentesNoLote: pending.length - done, loteCheio: pending.length >= config.MAX_SOLICITACOES_POR_EXECUCAO, respostasEmQuarentena: quarantined, formulariosVarridos: scanned, errosDeVarredura: scanErrors, varreduraParcial: scanned < sources.length || partialScan, atualizacaoFormularios: refresh};
 }
 
-function refreshFormsSafely_() {
+function refreshFormsSafely_(deadline, skipUnchangedViews) {
+  var executionDeadline = Number(deadline) || Infinity;
+  function postponed(phase) { return {adiada: true, fase: phase, motivo: 'Prazo reservado para a próxima execução.'}; }
+  if (Date.now() >= executionDeadline - 30000) return postponed('visoes');
   var refreshLock = LockService.getScriptLock();
-  refreshLock.waitLock(getConfig_().TEMPO_LOCK_MS);
+  var timeout = Math.min(getConfig_().TEMPO_LOCK_MS, Math.max(1, executionDeadline - Date.now() - 30000));
+  if (executionDeadline === Infinity) refreshLock.waitLock(timeout);
+  else if (!refreshLock.tryLock(timeout)) return {adiada: true, motivo: 'Livro oficial ocupado por outra execução.'};
   var token = pendingOperationToken_() + '|VIEW';
   var journal, deferred = false;
   try {
     assertNoReset_();
     assertNoPendingOperation_(true);
+    if (Date.now() >= executionDeadline - 30000) return postponed('visoes');
     journal = readJournal_();
-    rebuildViewsLocked_(journal);
+    if (Date.now() >= executionDeadline - 30000) return postponed('visoes');
+    if (skipUnchangedViews !== true || props_().getProperty('SEMINFO_VIEWS_HEAD') !== journal.head) rebuildViewsLocked_(journal);
+    if (Date.now() >= executionDeadline - 30000) return postponed('formularios');
     if (props_().getProperty('SEMINFO_FORM_REFRESH_PENDING')) deferred = true;
     else props_().setProperty('SEMINFO_FORM_REFRESH_PENDING', token);
   } finally { try { SpreadsheetApp.flush(); } finally { refreshLock.releaseLock(); } }
@@ -212,7 +230,7 @@ function refreshFormsSafely_() {
   // a manutenção periódica reaplica as opções com as decisões mais recentes.
   if (deferred) return {adiada: true, motivo: 'Atualização das opções já em andamento.'};
   var refreshResult, refreshError;
-  try { refreshResult = refreshFormsLocked_(journal.state); }
+  try { refreshResult = refreshFormsLocked_(journal.state, deadline); }
   catch (error) { refreshError = error; }
   finally {
     clearPendingOperation_('SEMINFO_FORM_REFRESH_PENDING', token);
@@ -238,12 +256,39 @@ function withExternalFormOperation_(fn) {
 }
 
 function manutencaoPeriodica() {
-  var deadline = Date.now() + 270000;
-  try { processarSolicitacoesPendentes(deadline); }
-  catch (error) { recordError_('recuperacao', '', error); }
-  try { sincronizarNomesAbasDeRespostas_(); }
-  catch (error) { recordError_('nomear-abas-respostas', '', error); }
-  postProcessing_(deadline);
+  var started = Date.now(), deadline = started + 270000;
+  requireInstaller_(false, true);
+  // O lock protege apenas o lease; envios e chamadas ao Forms continuam fora dele.
+  var lock = LockService.getScriptLock(), token = pendingOperationToken_();
+  if (!lock.tryLock(1000)) return {adiada: true, motivo: 'Outra operação está usando o livro oficial.'};
+  try {
+    assertNoReset_();
+    assertNoPendingOperation_(true);
+    var active = props_().getProperty('SEMINFO_MAINTENANCE_PENDING');
+    if (active && Date.now() - Number(active.split('|')[0]) < 540000) return {adiada: true, motivo: 'Manutenção anterior ainda em andamento.'};
+    props_().setProperty('SEMINFO_MAINTENANCE_PENDING', token);
+  } finally { lock.releaseLock(); }
+  var result = {};
+  function stage(name, fn) {
+    console.log('SEMINFO manutenção: início de ' + name + ' em ' + (Date.now() - started) + ' ms.');
+    try { result[name] = fn(); }
+    catch (error) { recordError_(name, '', error); result[name] = {erro: safeError_(error)}; }
+    console.log('SEMINFO manutenção: ' + name + ' em ' + (Date.now() - started) + ' ms. ' + JSON.stringify(result[name]));
+  }
+  try {
+    stage('recuperacao', function() { return processarSolicitacoesPendentes(Math.min(started + 120000, deadline), true); });
+    stage('sincronizacao', function() { return refreshFormsSafely_(Math.min(Date.now() + 90000, deadline - 45000), true); });
+    stage('notificacoes', function() { return postProcessing_(deadline - 15000); });
+    if (Date.now() < deadline - 30000) stage('nomear-abas-respostas', function() { return sincronizarNomesAbasDeRespostas_(deadline); });
+    result.duracaoMs = Date.now() - started;
+    return result;
+  } finally {
+    // Se houver contenção ao terminar, o lease expira sozinho, inclusive após timeout.
+    if (lock.tryLock(1000)) {
+      try { clearPendingOperation_('SEMINFO_MAINTENANCE_PENDING', token); }
+      finally { lock.releaseLock(); }
+    }
+  }
 }
 
 function reconstruirVisoes() {

@@ -271,6 +271,143 @@ function environment(defaultMode = 'VERIFIED') {
     installed, activity, begin, manualRegistration, configureExisting };
 }
 
+function simulatedClock(context) {
+  let now = Date.now();
+  context.Date = class extends Date {
+    constructor(...args) { super(...(args.length ? args : [now])); }
+    static now() { return now; }
+  };
+  return { now: () => now, advance: milliseconds => { now += milliseconds; } };
+}
+
+test('Perguntas com ID instalado não consultam a planilha de configuração novamente', () => {
+  const e = environment(), installed = e.installed(), form = e.forms.get(installed.registrationId);
+  e.context.getConfig_ = () => { throw new Error('Consulta desnecessária à planilha'); };
+  for (const key of ['NAME', 'CPF', 'ACTIVITY', 'SWAP']) {
+    assert(e.context.getStoredFormItem_(form, 'INSCRICAO', key));
+  }
+});
+
+test('Sincronização com prazo alterna lotes de Forms e pula somente visões já concluídas', () => {
+  const e = environment(), entries = Array.from({ length: 5 }, () => e.manualRegistration('A'));
+  e.configureExisting(entries, false); e.installed();
+  e.context.salvarAtividade(e.activity('A')); e.context.abrirInscricoes();
+  const journalBefore = JSON.stringify(e.context.readJournal_().operations), queueSyncs = e.stats.queueSyncs;
+  for (const {form} of entries) form.accepting = false;
+  e.properties.set('SEMINFO_FORM_REFRESH_INDEX', '0');
+  const first = e.context.refreshFormsSafely_(Date.now() + 90000, true);
+  assert.equal(first.atualizados, 3); assert.equal(first.parcial, true);
+  assert.deepEqual(entries.map(({form}) => form.accepting), [true, true, true, false, false]);
+  const second = e.context.refreshFormsSafely_(Date.now() + 90000, true);
+  assert.equal(second.atualizados, 3); assert(entries.every(({form}) => form.accepting));
+  assert.equal(e.stats.queueSyncs, queueSyncs, 'livro inalterado dispensa reconstrução periódica');
+  assert.equal(JSON.stringify(e.context.readJournal_().operations), journalBefore);
+  e.context.refreshFormsSafely_();
+  assert.equal(e.stats.queueSyncs, queueSyncs + 1, 'atualização manual ainda reconstrói as visões');
+  assert.equal(e.properties.has('SEMINFO_FORM_REFRESH_PENDING'), false);
+});
+
+test('Prazo esgotado na conferência dos Forms não abre nenhuma origem e libera o marcador', () => {
+  const e = environment(), entries = Array.from({ length: 4 }, () => e.manualRegistration('A'));
+  e.configureExisting(entries, false); e.installed();
+  e.context.salvarAtividade(e.activity('A')); e.context.abrirInscricoes();
+  for (const {form} of entries) form.accepting = false;
+  const clock = simulatedClock(e.context), verify = e.context.assertVerifiedEmail_;
+  e.context.assertVerifiedEmail_ = (...args) => { const result = verify(...args); clock.advance(31000); return result; };
+  const result = e.context.refreshFormsSafely_(clock.now() + 90000, true);
+  assert.equal(result.adiada, true); assert.equal(result.fase, 'verificacao');
+  assert(entries.every(({form}) => !form.accepting));
+  assert.equal(e.properties.has('SEMINFO_FORM_REFRESH_PENDING'), false);
+  assert.equal(e.stats.lockHeld, false);
+  e.context.assertVerifiedEmail_ = verify;
+  assert.equal(e.context.refreshFormsSafely_(clock.now() + 90000, true).atualizados, 3);
+});
+
+test('Falha do serviço na aplicação de opções preserva o cursor para tentar novamente', () => {
+  const e = environment(), entry = e.manualRegistration('A');
+  e.configureExisting([entry], false); e.installed();
+  e.context.salvarAtividade(e.activity('A')); e.context.abrirInscricoes();
+  entry.form.accepting = false;
+  const receive = entry.form.setAcceptingResponses;
+  entry.form.setAcceptingResponses = () => { throw new Error('Server error'); };
+  assert.throws(() => e.context.refreshFormsSafely_(Date.now() + 90000, true), /Server error/);
+  assert.equal(e.properties.get('SEMINFO_FORM_REFRESH_INDEX'), '0');
+  assert.equal(e.properties.has('SEMINFO_FORM_REFRESH_PENDING'), false);
+  entry.form.setAcceptingResponses = receive;
+  assert.equal(e.context.refreshFormsSafely_(Date.now() + 90000, true).atualizados, 1);
+  assert.equal(entry.form.accepting, true);
+});
+
+test('Varredura lenta retoma origens e respostas sem perder nem duplicar decisões', () => {
+  const e = environment(), entries = Array.from({ length: 3 }, () => e.manualRegistration('A'));
+  e.configureExisting(entries, false); e.installed();
+  e.context.salvarAtividade(e.activity('A')); e.context.abrirInscricoes();
+  entries.forEach(entry => e.responseFrom(entry));
+  const clock = simulatedClock(e.context);
+  for (const {form} of entries) form.getResponses = () => { clock.advance(25000); return form.responses; };
+  for (let round = 0; round < 3; round++) {
+    const result = e.context.processarSolicitacoesPendentes(clock.now() + 120000, true);
+    assert.equal(result.processadas, 1); assert.equal(result.varreduraParcial, true);
+  }
+  const requests = e.context.readJournal_().operations.filter(op => op.kind === 'REQUEST');
+  assert.equal(requests.length, 3);
+  assert.equal(new Set(requests.map(op => op.request.formId)).size, 3);
+  assert.equal(e.context.SemDomain.occupancy(e.context.readState_(), 'A'), 1);
+  assert.equal(e.context.processarSolicitacoesPendentes(clock.now() + 120000, true).processadas, 0);
+});
+
+test('Manutenção reserva prazos por etapa, deixa nomes para depois dos e-mails e evita sobreposição', () => {
+  const e = environment(); e.begin();
+  const clock = simulatedClock(e.context), started = clock.now(), stages = [];
+  e.context.processarSolicitacoesPendentes = (deadline, defer) => {
+    stages.push('recuperacao'); assert.equal(deadline, started + 120000); assert.equal(defer, true);
+    assert.equal(e.context.manutencaoPeriodica().adiada, true, 'segunda manutenção não trabalha junto');
+    clock.advance(120000); return {processadas: 1};
+  };
+  e.context.refreshFormsSafely_ = (deadline, skip) => {
+    stages.push('formularios'); assert.equal(deadline, started + 210000); assert.equal(skip, true);
+    clock.advance(90000); return {parcial: true};
+  };
+  e.context.postProcessing_ = deadline => {
+    stages.push('emails'); assert.equal(deadline, started + 255000); clock.advance(45000); return {enviadas: 1};
+  };
+  e.context.sincronizarNomesAbasDeRespostas_ = () => { throw new Error('Etapa sem tempo não deve iniciar'); };
+  const result = e.context.manutencaoPeriodica();
+  assert.deepEqual(stages, ['recuperacao', 'formularios', 'emails']);
+  assert.equal(result.duracaoMs, 255000);
+  assert.equal(e.properties.has('SEMINFO_MAINTENANCE_PENDING'), false);
+  assert.equal(e.stats.lockHeld, false);
+});
+
+test('Manutenção retoma lease expirado e libera o marcador mesmo após falha na recuperação', () => {
+  const e = environment(); e.begin();
+  const clock = simulatedClock(e.context);
+  e.properties.set('SEMINFO_MAINTENANCE_PENDING', (clock.now() - 540001) + '|interrompida');
+  e.context.processarSolicitacoesPendentes = () => { throw new Error('Serviço temporariamente indisponível'); };
+  let sends = 0;
+  e.context.refreshFormsSafely_ = () => ({atualizados: 1});
+  e.context.postProcessing_ = () => { sends++; return {enviadas: 1}; };
+  e.context.sincronizarNomesAbasDeRespostas_ = () => [];
+  const result = e.context.manutencaoPeriodica();
+  assert.match(result.recuperacao.erro, /temporariamente/);
+  assert.equal(sends, 1); assert.equal(e.context.tableRows_('Erros').length, 1);
+  assert.equal(e.properties.has('SEMINFO_MAINTENANCE_PENDING'), false);
+});
+
+test('Renomeação periódica atende uma origem por vez e continua após uma origem falhar', () => {
+  const e = environment(), a = e.manualRegistration('A'), b = e.manualRegistration('B');
+  e.configureExisting([a, b], false); e.installed();
+  const calls = [];
+  e.context.nomearAbasDeRespostas_ = ids => {
+    calls.push(Array.from(ids)); if (calls.length === 1) throw new Error('Server error'); return [];
+  };
+  assert.throws(() => e.context.sincronizarNomesAbasDeRespostas_(Date.now() + 60000), /Server error/);
+  e.context.sincronizarNomesAbasDeRespostas_(Date.now() + 60000);
+  assert.deepEqual(calls, [[a.form.id], [b.form.id]]);
+  assert.equal(e.context.sincronizarNomesAbasDeRespostas_(Date.now() + 1000).adiada, true);
+  assert.equal(calls.length, 2);
+});
+
 test('Instalação real com mocks cria Forms, abas e gatilhos uma vez e mantém ambos inicialmente fechados', () => {
   const e = environment(), first = e.installed(), counts = [e.sheets.size, e.stats.formsCreated, e.stats.destinations, e.stats.triggersCreated];
   assert.equal(e.context.readState_().accepting, false);

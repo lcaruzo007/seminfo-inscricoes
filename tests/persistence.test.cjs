@@ -225,6 +225,31 @@ function swapFixture() {
   return { f, first, swap };
 }
 
+test('Visões só recebem marcador de conclusão depois da fila; falha retoma sem outro append', () => {
+  const f = fixture(); f.seed(f.activity('A'));
+  const response = f.response('A');
+  f.faults.queue = 1;
+  assert.throws(() => f.process(response), /reconstruir a fila/);
+  assert.equal(f.context.props_().getProperty('SEMINFO_VIEWS_HEAD'), '');
+  const count = f.rows.length;
+  assert.equal(f.process(response).code, 'confirmed');
+  assert.equal(f.rows.length, count);
+  assert.equal(f.context.props_().getProperty('SEMINFO_VIEWS_HEAD'), f.journal().head);
+  assert.equal(f.notifications.has(response.request.key), true);
+});
+
+test('Falha de flush das visões não publica marcador para o novo estado do livro', () => {
+  const f = fixture(); f.seed(f.activity('A'));
+  f.process(f.response('A'));
+  const previousHead = f.context.props_().getProperty('SEMINFO_VIEWS_HEAD');
+  f.append({ key: 'close-A', kind: 'CATALOG', at: AT, activity: {...f.activity('A'), status: 'encerrada'} });
+  f.context.SpreadsheetApp.flush = () => { throw new Error('Falha ao confirmar escrita das visões'); };
+  assert.throws(() => f.context.withLock_(() => f.context.rebuildViewsLocked_(f.journal())), /confirmar escrita/);
+  assert.equal(f.context.props_().getProperty('SEMINFO_VIEWS_HEAD'), previousHead);
+  assert.notEqual(previousHead, f.journal().head);
+  f.assertUnlocked();
+});
+
 function assertCompletedSwap(f, swap) {
   const journal = f.journal();
   assert.equal(journal.byKey[swap.request.key].outcome.code, 'swapped');
