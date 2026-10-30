@@ -28,9 +28,12 @@ function onOpen() {
     .addItem('Reavaliar inscrições recusadas / corrigir capacidade', 'menuReavaliarInscricoes')
     .addItem('Exportar lista confirmada', 'menuExportar')
     .addItem('Gerar listas de terça à tarde (27/10)', 'menuExportarListas27Tarde')
+    .addItem('Gerar listas de presença por dia e sala', 'menuListasPresenca')
     .addSeparator()
     .addItem('Abrir inscrições', 'abrirInscricoes')
     .addItem('Encerrar inscrições', 'encerrarInscricoes')
+    .addItem('Encerrar evento, cancelar e-mails e gerar presenças', 'menuEncerrarEvento')
+    .addItem('Cancelar e-mails pendentes e suspender envios', 'menuCancelarEmailsPendentes')
     .addItem('Cancelar com justificativa', 'menuCancelar')
     .addItem('Cancelar equipe com justificativa', 'menuCancelarEquipe')
     .addItem('Alterar e-mail vinculado ao CPF', 'menuAlterarEmail')
@@ -232,6 +235,7 @@ function encerrarInscricoes() { requireInstaller_(); return changeMode_(false); 
 
 function changeMode_(accepting) {
   withLock_(function() {
+    if (accepting && props_().getProperty('SEMINFO_EVENTO_ENCERRADO_EM')) throw new Error('O evento foi encerrado. As inscrições não podem ser reabertas nesta edição.');
     var journal = readJournal_();
     if (journal.state.accepting !== accepting) {
       commitOperationLocked_(journal, {key: 'ADMIN:MODE:' + Utilities.getUuid(), kind: 'MODE', at: new Date().toISOString(), accepting: accepting});
@@ -241,6 +245,127 @@ function changeMode_(accepting) {
   });
   return refreshFormsSafely_();
 }
+
+/** Fecha todas as origens sem depender de perguntas, API VERIFIED ou vagas. */
+function fecharFormulariosEvento_() {
+  var sources = getFormSources_(), config = getConfig_();
+  var historical = JSON.parse(String(config.IMPORTACAO_CSP_JSON || '{}'));
+  if (historical.formId && !sources.some(function (source) { return source.id === historical.formId; })) sources.push({id: historical.formId});
+  var result = {fechados: [], falhas: []};
+  sources.forEach(function (source) {
+    try {
+      var form = openFormWithDriveRetry_(source.id);
+      // O fechamento é obrigatório mesmo quando a mensagem opcional falha.
+      setFormReceiving_(form, false);
+      result.fechados.push(source.id);
+      setFormClosedMessage_(form, 'A XXI SEMINFO foi encerrada. Inscrições e cancelamentos estão fechados.');
+    } catch (error) {
+      result.falhas.push({formId: source.id, motivo: safeError_(error)});
+      recordError_('encerrar-evento-form', source.id, error);
+    }
+  });
+  result.parcial = result.falhas.length > 0;
+  return result;
+}
+
+/** Reexecutável após interrupção; não apaga inscrições, respostas ou histórico. */
+function encerrarEventoSeminfo() {
+  requireInstaller_();
+  var result = withExternalFormOperation_(function () {
+    var summary = withLock_(function () {
+      var properties = props_(), journal = readJournal_();
+      if (!properties.getProperty('SEMINFO_EVENTO_ENCERRADO_EM')) properties.setProperty('SEMINFO_EVENTO_ENCERRADO_EM', new Date().toISOString());
+      var emails = cancelarEmailsPendentesLocked_();
+      if (journal.state.accepting) {
+        commitOperationLocked_(journal, {key: 'ADMIN:ENCERRAMENTO:' + Utilities.getUuid(), kind: 'MODE',
+          at: new Date().toISOString(), accepting: false, reason: 'Encerramento definitivo da XXI SEMINFO.'});
+      }
+      var viewsError = '';
+      try { rebuildViewsLocked_(readJournal_()); }
+      catch (error) { viewsError = safeError_(error); recordError_('encerrar-evento-visoes', '', error); }
+      return {encerradoEm: properties.getProperty('SEMINFO_EVENTO_ENCERRADO_EM'), inscricoesAbertas: false,
+        emails: emails, erroVisoes: viewsError};
+    }, false, true);
+    summary.formularios = fecharFormulariosEvento_();
+    return summary;
+  });
+  result.presencas = gerarListasPresencaPorDiaESala();
+  result.parcial = !!result.erroVisoes || result.formularios.parcial || result.presencas.parcial || result.emails.emEnvio > 0;
+  console.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
+function gruposPresenca_(state) {
+  var references = {}, groups = Object.create(null);
+  programacaoSeminfo2026_().forEach(function (entry) { references[entry.id] = entry; });
+  Object.values(state.activities).forEach(function (activity) {
+    var reference = references[activity.id] || {};
+    var date = activity.start ? Utilities.formatDate(new Date(activity.start), 'America/Sao_Paulo', 'yyyy-MM-dd') : (reference.date || 'Sem data');
+    var room = String(activity.location || reference.location || 'Sala não informada').trim();
+    var key = JSON.stringify([date, room]);
+    if (!groups[key]) groups[key] = {data: date, sala: room, atividades: [], linhas: [], inscritos: 0};
+    var group = groups[key];
+    var beginning = activity.start ? Utilities.formatDate(new Date(activity.start), 'America/Sao_Paulo', 'HH:mm') : (reference.start || 'A confirmar');
+    var end = activity.end ? Utilities.formatDate(new Date(activity.end), 'America/Sao_Paulo', 'HH:mm') : (reference.end || 'A confirmar');
+    group.atividades.push(activity.title);
+    var participants = inscritosDaAtividade_(state, activity.id);
+    group.inscritos += participants.length;
+    // Atividades vazias também ficam identificadas, sem atestar presença.
+    (participants.length ? participants : [{nome: ''}]).forEach(function (participant) {
+      group.linhas.push([date, room, beginning + ' – ' + end, activity.title, participant.nome,
+        participant.equipe || '', participant.papel || '', '', '', '']);
+    });
+  });
+  return Object.values(groups).sort(function (a, b) {
+    return a.data.localeCompare(b.data) || a.sala.localeCompare(b.sala, 'pt-BR', {numeric: true});
+  }).map(function (group) {
+    group.linhas.sort(function (a, b) { return a[2].localeCompare(b[2]) || a[3].localeCompare(b[3], 'pt-BR') || a[4].localeCompare(b[4], 'pt-BR'); });
+    return group;
+  });
+}
+
+/** Novas fotografias privadas: não sobrescreve marcações de listas anteriores. */
+function gerarListasPresencaPorDiaESala() {
+  requireInstaller_();
+  var state = withLock_(function () { return readState_(); });
+  var groups = gruposPresenca_(state), lists = [], errors = [];
+  var headers = ['DATA', 'SALA', 'HORARIO', 'ATIVIDADE', 'NOME', 'EQUIPE', 'PAPEL', 'PRESENCA', 'ASSINATURA', 'OBSERVACOES'];
+  var suffix = Utilities.formatDate(new Date(), 'America/Sao_Paulo', 'yyyyMMdd_HHmmss') + '_' + Utilities.getUuid().slice(0, 8);
+  groups.forEach(function (group, index) {
+    var label = group.sala.replace(/[\[\]:*?\/\\]/g, '_').slice(0, 32);
+    var name = 'Presenca_' + group.data + '_' + label + '_' + (index + 1) + '_' + suffix;
+    try {
+      writeTable_(name, headers, group.linhas);
+      var sheet = db_().getSheetByName(name);
+      // Marcações ficam editáveis pela organização com acesso à planilha privada.
+      sheet.autoResizeColumns(1, headers.length);
+      sheet.setColumnWidth(5, 240);
+      sheet.setColumnWidth(9, 260);
+      sheet.setRowHeights(2, group.linhas.length, 32);
+      lists.push({data: group.data, sala: group.sala, atividades: group.atividades, inscritos: group.inscritos,
+        aba: name, url: db_().getUrl() + '#gid=' + sheet.getSheetId()});
+    } catch (error) {
+      errors.push({data: group.data, sala: group.sala, motivo: safeError_(error)});
+      recordError_('listas-presenca', name, error);
+    }
+  });
+  var indexName = 'Presencas_Indice_' + suffix;
+  try {
+    writeTable_(indexName, ['DATA', 'SALA', 'ATIVIDADES', 'INSCRITOS', 'ABA', 'LINK'], lists.map(function (list) {
+      return [list.data, list.sala, list.atividades.join('\n'), list.inscritos, list.aba, list.url];
+    }));
+  } catch (error) { errors.push({indice: true, motivo: safeError_(error)}); }
+  var result = {fuso: 'America/Sao_Paulo', totalSalasDias: groups.length, listasGeradas: lists.length,
+    totalInscritos: lists.reduce(function (total, list) { return total + list.inscritos; }, 0),
+    indice: errors.some(function (error) { return error.indice; }) ? '' : db_().getUrl() + '#gid=' + db_().getSheetByName(indexName).getSheetId(),
+    listas: lists, falhas: errors, parcial: errors.length > 0};
+  console.log(JSON.stringify(result, null, 2));
+  return result;
+}
+
+function menuEncerrarEvento() { SpreadsheetApp.getUi().alert(JSON.stringify(encerrarEventoSeminfo(), null, 2)); }
+function menuCancelarEmailsPendentes() { SpreadsheetApp.getUi().alert(JSON.stringify(cancelarEmailsPendentes(), null, 2)); }
+function menuListasPresenca() { SpreadsheetApp.getUi().alert(JSON.stringify(gerarListasPresencaPorDiaESala(), null, 2)); }
 
 function atualizarOpcoesFormularios() {
   requireInstaller_(false, true);
@@ -1249,7 +1374,7 @@ function limparTudoERecomecar() {
       if (sheet.getLastRow() > 1) sheet.getRange(2, 1, sheet.getLastRow() - 1, sheet.getLastColumn()).clearContent();
     });
     Object.keys(properties.getProperties()).forEach(function (key) {
-      if (/^SEMINFO_(VERIFIED_SINCE_|SCAN_)/.test(key) || key === 'SEMINFO_IMPORTACAO_CSP') properties.deleteProperty(key);
+      if (/^SEMINFO_(VERIFIED_SINCE_|SCAN_)/.test(key) || ['SEMINFO_IMPORTACAO_CSP', 'SEMINFO_EVENTO_ENCERRADO_EM', 'SEMINFO_EMAILS_CANCELADOS_EM'].indexOf(key) >= 0) properties.deleteProperty(key);
     });
     properties.setProperty('SEMINFO_RESET_AT', new Date().toISOString());
     properties.setProperty('SEMINFO_GENERATION', Utilities.getUuid());

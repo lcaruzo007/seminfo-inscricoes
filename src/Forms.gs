@@ -548,6 +548,7 @@ function verifyForms_(activate) {
 
 /** Estado lido sob lock; chamadas ao Forms executadas fora dele, sob marcador VIEW. */
 function refreshFormsLocked_(state, deadline) {
+  if (props_().getProperty('SEMINFO_EVENTO_ENCERRADO_EM')) return fecharFormulariosEvento_();
   var executionDeadline = Number(deadline) || Infinity;
   var sources = getFormSources_();
   if (!sources.some(function (source) { return source.kind === 'INSCRICAO'; })) return {available: 0, total: 0, issues: ['Formulários ainda não instalados.']};

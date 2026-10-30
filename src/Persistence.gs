@@ -114,10 +114,12 @@ function enrichOutcome_(state, request, outcome) {
 }
 
 function processFormResponse_(kind, form, response, deferViews, deadline) {
+  if (props_().getProperty('SEMINFO_EVENTO_ENCERRADO_EM')) return {code: 'closed', message: 'Evento encerrado; resposta preservada no Forms.', changes: []};
   var request;
   try {
     request = parseFormRequest_(kind, form, response); // Valida VERIFIED pela API antes de qualquer vínculo.
     var outcome = withLock_(function() {
+      if (props_().getProperty('SEMINFO_EVENTO_ENCERRADO_EM')) return {code: 'closed', message: 'Evento encerrado; resposta preservada no Forms.', changes: []};
       var journal = readJournal_();
       var resetAt = props_().getProperty('SEMINFO_RESET_AT');
       if (resetAt && Date.parse(request.submittedAt) <= Date.parse(resetAt)) throw new Error('Resposta anterior à limpeza; envie novamente após a abertura.');
@@ -161,6 +163,7 @@ function postProcessing_(deadline) {
 function processarSolicitacoesPendentes(deadline, deferRefresh) {
   var started = Date.now(), finalDeadline = Math.min(started + 270000, Number(deadline) || Infinity);
   requireInstaller_(false, true);
+  if (props_().getProperty('SEMINFO_EVENTO_ENCERRADO_EM')) return {processadas: 0, eventoEncerrado: true};
   var config = getConfig_(), pending = [], quarantined = 0;
   var executionDeadline = deferRefresh === true ? finalDeadline : Math.min(started + 150000, finalDeadline - 60000);
   var scanDeadline = Math.min(started + 60000, executionDeadline - 30000);
@@ -258,6 +261,7 @@ function withExternalFormOperation_(fn) {
 function manutencaoPeriodica() {
   var started = Date.now(), deadline = started + 270000;
   requireInstaller_(false, true);
+  if (props_().getProperty('SEMINFO_EVENTO_ENCERRADO_EM')) return {eventoEncerrado: true};
   // O lock protege apenas o lease; envios e chamadas ao Forms continuam fora dele.
   var lock = LockService.getScriptLock(), token = pendingOperationToken_();
   if (!lock.tryLock(1000)) return {adiada: true, motivo: 'Outra operação está usando o livro oficial.'};

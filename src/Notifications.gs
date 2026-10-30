@@ -10,6 +10,42 @@ var EMAIL_HEADERS = [
 var EMAIL_SHEET = 'FilaEmails';
 var EMAIL_LEASE_MS = 10 * 60 * 1000;
 
+function notificacoesSuspensas_() {
+  return !!props_().getProperty('SEMINFO_EMAILS_CANCELADOS_EM');
+}
+
+/** Suspende também a criação de avisos futuros; mantém a fila como histórico. */
+function cancelarEmailsPendentes() {
+  requireInstaller_(false, true);
+  return withLock_(function () { return cancelarEmailsPendentesLocked_(); }, false, false, true);
+}
+
+function cancelarEmailsPendentesLocked_() {
+  if (!notificacoesSuspensas_()) props_().setProperty('SEMINFO_EMAILS_CANCELADOS_EM', new Date().toISOString());
+  var sheet = ensureNotificationSheet_(), rows = notificationRows_(sheet);
+  var result = {canceladas: 0, enviadasPreservadas: 0, emEnvio: 0, enviosSuspensos: true};
+  rows.forEach(function (row) {
+    if (row.SITUACAO === 'enviada') { result.enviadasPreservadas++; return; }
+    // O MailApp pode já ter aceitado um envio fora do lock. Não invente seu resultado.
+    if (row.SITUACAO === 'processando' && notificationMillis_(row.LEASE_ATE) > Date.now()) { result.emEnvio++; return; }
+    if (row.SITUACAO === 'cancelada') return;
+    row.SITUACAO = 'cancelada';
+    row.ERRO = 'CANCELADA: envios encerrados pela organização após o evento.';
+    row.PROXIMA_TENTATIVA = '';
+    row.LEASE_ATE = '';
+    result.canceladas++;
+  });
+  // A fila pode acumular milhares de mensagens sem cota. Uma escrita em lote
+  // evita gastar o tempo da execução com um flush por mensagem cancelada.
+  if (result.canceladas) {
+    sheet.getRange(2, 8, rows.length, 5).setNumberFormat('@').setValues(rows.map(function (row) {
+      return [row.SITUACAO, row.TENTATIVAS, row.ERRO, row.PROXIMA_TENTATIVA, row.LEASE_ATE];
+    }));
+    SpreadsheetApp.flush();
+  }
+  return result;
+}
+
 function ensureNotificationSheet_() {
   var spreadsheet = db_();
   var sheet = spreadsheet.getSheetByName(EMAIL_SHEET);
@@ -36,7 +72,7 @@ function notificationRows_(sheet) {
         throw new Error('FilaEmails contém identificador vazio ou duplicado; procure a organização.');
       }
       seen[row.ID] = true;
-      if (['pendente', 'processando', 'enviada'].indexOf(String(row.SITUACAO)) < 0) {
+      if (['pendente', 'processando', 'enviada', 'cancelada'].indexOf(String(row.SITUACAO)) < 0) {
         throw new Error('FilaEmails contém situação inválida; procure a organização.');
       }
       return row;
@@ -128,6 +164,7 @@ function currentCapacityEvents_(operations) {
 
 /** Acrescenta avisos ausentes; remove CC de sucessos ainda pendentes. */
 function syncNotificationQueueLocked_(operations) {
+  if (notificacoesSuspensas_()) return 0;
   var config = getConfig_();
   var sheet = ensureNotificationSheet_();
   var existing = {};
@@ -196,6 +233,9 @@ function syncNotificationQueueLocked_(operations) {
  */
 function processarNotificacoes(deadline) {
   requireInstaller_(false, true);
+  if (notificacoesSuspensas_()) return withLock_(function () {
+    return Object.assign({enviadas: 0, adiadas: 0, tentativas: 0}, cancelarEmailsPendentesLocked_());
+  }, false, false, true);
   var config = getConfig_();
   if (!notificationAddress_(config.EMAIL_CA)) throw new Error('Configure EMAIL_CA antes dos envios.');
   var configured = Number(config.MAX_EMAILS_POR_EXECUCAO || 10);
@@ -210,7 +250,9 @@ function processarNotificacoes(deadline) {
     summary.tentativas++;
     var sendError = '';
     try {
-      if (MailApp.getRemainingDailyQuota() < notificationRecipients_(job)) {
+      if (notificacoesSuspensas_()) {
+        sendError = 'CANCELADA: envios encerrados pela organização após o evento.';
+      } else if (MailApp.getRemainingDailyQuota() < notificationRecipients_(job)) {
         sendError = 'SEM_COTA: aguardando disponibilidade de destinatários.';
       } else {
         var message = {
@@ -237,6 +279,7 @@ function processarNotificacoes(deadline) {
 }
 
 function claimNotificationLocked_() {
+  if (notificacoesSuspensas_()) return null;
   var sheet = ensureNotificationSheet_();
   var rows = notificationRows_(sheet);
   var now = Date.now();
@@ -295,6 +338,10 @@ function finishNotificationLocked_(job, errorMessage) {
     row.SITUACAO = 'enviada';
     row.ENVIADA_EM = new Date().toISOString();
     row.ERRO = '';
+    row.PROXIMA_TENTATIVA = '';
+  } else if (notificacoesSuspensas_()) {
+    row.SITUACAO = 'cancelada';
+    row.ERRO = 'CANCELADA: envios encerrados pela organização após o evento.';
     row.PROXIMA_TENTATIVA = '';
   } else {
     row.SITUACAO = 'pendente';

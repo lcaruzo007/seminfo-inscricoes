@@ -93,10 +93,15 @@ Depois de reabrir a planilha, o menu **SEMINFO** reúne as ações de operação
 | Consultar a cota de e-mail sem conferir Forms ou gatilhos | `consultarCotaEmails` |
 | Recuperar somente os gatilhos de uma instalação existente | `repararGatilhos` |
 | Abrir ou encerrar inscrições | `abrirInscricoes` / `encerrarInscricoes` |
+| Encerrar o evento, cancelar e-mails pendentes e gerar presenças por dia/sala | `encerrarEventoSeminfo` |
+| Gerar novamente listas de presença, preservando as anteriores | `gerarListasPresencaPorDiaESala` |
+| Cancelar e-mails pendentes e suspender novos envios | `cancelarEmailsPendentes` |
 | Consultar ocupação | `consultarOcupacao` |
 | Corrigir capacidade e reavaliar recusas de uma atividade encerrada | `menuReavaliarInscricoes` |
 | Exportar uma lista de confirmados | `exportarConfirmados` |
 | Recuperar as abas de consulta | `reconstruirVisoes` |
+
+**Encerramento após o evento:** atualize `Admin.gs`, `Notifications.gs`, `Forms.gs` e `Persistence.gs` no Apps Script, salve e execute **`encerrarEventoSeminfo`** com a conta instaladora. A função encerra as inscrições, fecha os Forms de inscrição/cancelamento e o histórico da CSP, cancela os e-mails ainda pendentes e bloqueia novos envios. Cria listas dos **confirmados por dia e sala**, com presença e assinatura em branco, incluindo os integrantes das equipes. A aba `Presencas_Indice_…` reúne os links. Inscrições, respostas e histórico são preservados. O [guia de encerramento](docs/ENCERRAMENTO.md) explica a execução, as falhas parciais e os envios que já estavam em andamento.
 
 **Atualizar a programação** aplica os nomes, ministrantes, salas, horários e capacidades finais em `Atividades` e `Programacao`, incorpora os novos Forms e atualiza títulos e descrições. A migração mantém inscrições e registra a mudança no livro oficial; recusa o lote se uma capacidade ficar abaixo da ocupação ou os novos horários causarem conflitos. Consulte o [roteiro da programação final](docs/PROGRAMACAO_FINAL.md) para aplicar a atualização existente e conferir pendências.
 

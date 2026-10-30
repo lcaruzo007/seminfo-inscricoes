@@ -2,13 +2,13 @@
 
 ## Executados localmente
 
-Em 27/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **235 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
+Em 30/10/2026 foram executadas quatro suítes com Node.js, carregando os arquivos `.gs` reais em um contexto JavaScript. Resultado final: **249 testes aprovados, nenhuma falha**. Serviços de planilha, Forms, gatilhos, lock e e-mail são simulados; os resultados não representam execução no Google Apps Script nem envio de mensagens reais. O total é atualizado pelo empacotamento.
 
 | Suíte | Testes | Evidência |
 |---|---:|---|
 | `tests/domain.test.cjs` | 34 | Regras puras de CPF, identidade, vagas, intervalos, trocas, replay e administração |
-| `tests/notifications.test.cjs` | 21 | Cota incluindo CC, deduplicação, leases, falhas, modelos, prazo e duplicação após envio interrompido |
-| `tests/forms-install.test.cjs` | 163 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
+| `tests/notifications.test.cjs` | 24 | Cota incluindo CC, deduplicação, leases, falhas, modelos, prazo e duplicação após envio interrompido |
+| `tests/forms-install.test.cjs` | 174 | `instalarSistema` real com mocks, preservação dos dados, Forms/opções, modo verificado e quarentena |
 | `tests/persistence.test.cjs` | 17 | Injeção de falhas antes/depois do append, recuperação, corrupção e releitura sob lock simulado |
 
 As suítes usam `node:test`/`assert`, `vm` e `crypto`, todos nativos do Node, e carregam os módulos de `src/`. Execute cada arquivo na raiz do projeto conforme o [README](../README.md). São apropriados também para ambientes que não permitem subprocessos do executor `node --test`. O empacotamento gera `dist/test-results.txt` com a saída da execução final; os relatórios e pacotes de `dist/` ficam fora do Git.
@@ -26,6 +26,8 @@ A suíte de Forms também reproduz a falha da mensagem opcional de fechamento em
 A configuração administrativa de e-mail verificado cobre vários Forms, incluindo cancelamento e coleta desativada, repetição sem novas escritas e preservação de IDs, perguntas, respostas e inscrições. Confere a releitura após atualização, falhas HTTP, recusa de alteração por outra conta, Forms fechados até a abertura e quarentena das respostas anteriores à correção. `onOpen` cria o menu com interface e orienta pelo log quando executado sem ela, propagando erros diferentes. A alteração real de `emailCollectionType` pela API ainda exige homologação no Google.
 
 A política de notificações é verificada com confirmação sem CC, problemas com CC, aviso direto ao CA na última vaga, deduplicação, prioridade com cota curta, nova lotação após cancelamento, troca entre atividades, redução de capacidade e remoção do CC de sucessos pendentes. Um teste de integração carrega também `Notifications.gs` real junto do livro de operações e confere confirmação, conflito e aviso de capacidade sem repetir envios na reconstrução.
+
+O encerramento pós-evento cobre suspensão persistente dos e-mails, cancelamento de pendências e reservas expiradas, preservação dos enviados e resultado real de reservas ativas. Confere a suspensão entre a reserva e o envio, a não recriação de avisos, o fechamento dos Forms de inscrição/cancelamento e CSP, a preservação das inscrições e o bloqueio de reabertura/manutenção. As listas são verificadas por dia e sala no fuso de São Paulo, incluindo turnos distintos, atividades vazias, cancelamentos excluídos, integrantes/coach da CSP, campos de presença e assinatura em branco, índice de links e repetição sem sobrescrever marcações. Testa falhas parciais de Forms/exportação, repetição, restrição à conta instaladora e remoção dos marcadores após um reinício completo. A execução real na conta Google continua necessária.
 
 A criação dos Meets cobre as três palestras online, reservas das 19h às 22h no fuso de Brasília, links na aba `Meets`, pedidos distintos de conferência e repetição sem eventos duplicados. Verifica também a atualização dos eventos anteriores das 19h30, preservando links e demais dados. Simula geração assíncrona, resposta perdida após criar o evento, conflito de ID, nova tentativa de conferência falha, falta de permissão, serviço desativado, conta incorreta e evento excluído. Confere a liberação do bloqueio após erros; os serviços do Calendar são simulados, sem criação real de reuniões.
 

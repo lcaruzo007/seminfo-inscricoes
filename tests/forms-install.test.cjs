@@ -68,6 +68,8 @@ function environment(defaultMode = 'VERIFIED') {
     getProtections() { return this.protections; }
     protect() { const protection = new Protection(this); this.protections.push(protection); return protection; }
     autoResizeColumns() { return this; }
+    setColumnWidth() { return this; }
+    setRowHeights() { return this; }
     getSheetId() { return this.sheetId; }
     getName() { return this.name; }
     getFormUrl() { return this.formUrl || null; }
@@ -279,6 +281,132 @@ function simulatedClock(context) {
   };
   return { now: () => now, advance: milliseconds => { now += milliseconds; } };
 }
+
+function useSaoPauloFormats(context) {
+  context.Utilities.formatDate = (date, timezone, pattern) => {
+    assert.equal(timezone, 'America/Sao_Paulo');
+    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-CA', {
+      timeZone: timezone, year: 'numeric', month: '2-digit', day: '2-digit',
+      hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23'
+    }).formatToParts(date).map(part => [part.type, part.value]));
+    const formats = {'yyyy-MM-dd': `${parts.year}-${parts.month}-${parts.day}`, 'HH:mm': `${parts.hour}:${parts.minute}`,
+      'yyyyMMdd_HHmmss': `${parts.year}${parts.month}${parts.day}_${parts.hour}${parts.minute}${parts.second}`};
+    return formats[pattern] || date.toISOString();
+  };
+}
+
+test('Encerramento preserva confirmados, fecha inscrição, cancelamento e CSP, suspende fila e gera listas', () => {
+  const e = environment(); e.begin(); useSaoPauloFormats(e.context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'Notifications.gs'), 'utf8'), e.context);
+  e.sheets.get('FilaEmails').cells = []; // Substitui a fila mínima do fixture pela estrutura real.
+  const input = e.response('INSCRICAO');
+  assert.equal(e.context.processFormResponse_('INSCRICAO', input.form, input.response).code, 'confirmed');
+  const state = e.context.readState_();
+  const historical = e.context.FormApp.create('CSP histórica', true);
+  e.context.setConfig_('IMPORTACAO_CSP_JSON', JSON.stringify({formId: historical.id}));
+  const result = e.context.encerrarEventoSeminfo();
+  assert.equal(result.parcial, false);
+  assert.equal(result.inscricoesAbertas, false);
+  assert.equal(result.emails.canceladas, 2); // Confirmação e aviso de última vaga.
+  assert.equal(result.formularios.fechados.length, 3);
+  assert([...e.forms.values()].every(form => !form.accepting));
+  assert.equal(e.context.readState_().accepting, false);
+  assert.equal(JSON.stringify(e.context.readState_().registrations), JSON.stringify(state.registrations));
+  assert.equal(result.presencas.totalInscritos, 1);
+  const sheet = e.sheets.get(result.presencas.listas[0].aba);
+  assert.deepEqual(sheet.cells[1].slice(7, 9), ['', '']);
+  assert(!sheet.cells[0].includes('CPF')); assert(!sheet.cells[0].includes('EMAIL'));
+  const head = e.context.readJournal_().head;
+  assert.throws(() => e.context.changeMode_(true), /evento foi encerrado/);
+  assert.equal(e.context.processFormResponse_('CANCELAMENTO', null, null).code, 'closed');
+  assert.equal(e.context.processarSolicitacoesPendentes().processadas, 0);
+  assert.equal(e.context.manutencaoPeriodica().eventoEncerrado, true);
+  e.context.atualizarOpcoesFormularios();
+  assert([...e.forms.values()].every(form => !form.accepting));
+  sheet.cells[1][7] = 'Sim'; sheet.cells[1][8] = 'Assinado';
+  const again = e.context.encerrarEventoSeminfo();
+  assert.equal(again.encerradoEm, result.encerradoEm);
+  assert.equal(e.context.readJournal_().head, head);
+  assert.equal(again.emails.canceladas, 0);
+  assert.equal(e.context.notificationRows_(e.sheets.get('FilaEmails'))[0].SITUACAO, 'cancelada');
+  assert.deepEqual(sheet.cells[1].slice(7, 9), ['Sim', 'Assinado']);
+  assert.notEqual(again.presencas.listas[0].aba, result.presencas.listas[0].aba);
+});
+
+test('Listas agrupam todos os dias e salas, separam horários e incluem integrantes de equipes confirmadas', () => {
+  const e = environment(); e.installed(); useSaoPauloFormats(e.context);
+  const activities = {
+    A: e.activity('A', {start: '2026-10-27T02:00:00Z', end: '2026-10-27T03:00:00Z'}),
+    B: e.activity('B', {start: '2026-10-27T13:00:00-03:00', end: '2026-10-27T17:00:00-03:00'}),
+    C: e.activity('C', {location: 'Sala 2', start: '2026-10-28T13:00:00-03:00'}),
+    D: e.activity('D', {start: '2026-10-27T19:00:00-03:00', end: '2026-10-27T23:00:00-03:00'}),
+    CSP_2026: e.activity('CSP_2026', {start: '', end: '', location: 'Prédio da Informática'})
+  };
+  const state = {activities, participants: {p: {name: 'Ana', cpf: 'p', email: 'ana@example.org'}}, registrations: {
+    r1: {id: 'r1', activityId: 'A', cpf: 'p', status: 'confirmada'},
+    r2: {id: 'r2', activityId: 'B', cpf: 'p', status: 'cancelada'},
+    r3: {id: 'r3', activityId: 'D', cpf: 'p', status: 'confirmada'},
+    t: {id: 't', activityId: 'CSP_2026', status: 'confirmada', entityType: 'EQUIPE', teamName: 'Equipe 1',
+      members: [{name: 'Coach', cpf: 'c', role: 'coach'}, {name: 'Integrante', cpf: 'i', role: 'integrante'}]}
+  }};
+  const groups = e.context.gruposPresenca_(state);
+  assert.deepEqual(Array.from(groups, group => group.data), ['2026-10-26', '2026-10-27', '2026-10-28', '2026-10-29']);
+  const tuesday = groups.find(group => group.data === '2026-10-27');
+  assert.equal(tuesday.atividades.length, 2); assert.equal(tuesday.inscritos, 1);
+  assert.equal(tuesday.linhas.filter(row => row[4] === 'Ana').length, 1);
+  assert.equal(tuesday.linhas.find(row => row[4] === 'Ana')[2], '19:00 – 23:00');
+  const team = groups.find(group => group.data === '2026-10-29');
+  assert.equal(team.inscritos, 2); assert.equal(team.linhas[0][5], 'Equipe 1');
+  assert(groups.every(group => group.linhas.every(row => row[7] === '' && row[8] === '')));
+  e.context.readState_ = () => state;
+  const result = e.context.gerarListasPresencaPorDiaESala();
+  assert.equal(result.listasGeradas, 4); assert.equal(result.totalInscritos, 4);
+  assert.equal(result.parcial, false); assert(result.indice.includes('#gid='));
+});
+
+test('Falha ao fechar um Form não impede os demais nem a geração; reexecução conclui o fechamento', () => {
+  const e = environment(); e.begin(); useSaoPauloFormats(e.context);
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'src', 'Notifications.gs'), 'utf8'), e.context);
+  e.sheets.get('FilaEmails').cells = [];
+  const cancellation = e.forms.get(e.context.getConfig_().ID_FORM_CANCELAMENTO);
+  const close = cancellation.setAcceptingResponses;
+  cancellation.setAcceptingResponses = () => { throw new Error('Form temporariamente inacessível'); };
+  const result = e.context.encerrarEventoSeminfo();
+  assert.equal(result.parcial, true); assert.equal(result.formularios.falhas.length, 1);
+  assert.equal(result.presencas.listasGeradas, 1);
+  assert.equal(e.context.readState_().accepting, false);
+  cancellation.setAcceptingResponses = close;
+  assert.equal(e.context.encerrarEventoSeminfo().parcial, false);
+  assert.equal(cancellation.accepting, false);
+});
+
+test('Encerramento e listas exigem instalador; exportação informa falhas parciais e preserva demais salas', () => {
+  const e = environment(); e.installed(); e.context.carregarProgramacaoSeminfo2026(); useSaoPauloFormats(e.context);
+  const write = e.context.writeTable_;
+  e.context.writeTable_ = (name, ...args) => {
+    if (name.includes('_Sala 15_')) throw new Error('Falha de gravação');
+    return write(name, ...args);
+  };
+  const result = e.context.gerarListasPresencaPorDiaESala();
+  assert.equal(result.parcial, true); assert.equal(result.falhas.length, 2);
+  assert(result.listas.some(list => list.sala === 'Sala 14'));
+  const before = e.sheets.size;
+  e.context.Session.getEffectiveUser = () => ({getEmail: () => 'outra@example.org'});
+  assert.throws(() => e.context.encerrarEventoSeminfo(), /conta que instalou/);
+  assert.throws(() => e.context.gerarListasPresencaPorDiaESala(), /conta que instalou/);
+  assert.equal(e.sheets.size, before); assert(!e.properties.has('SEMINFO_EVENTO_ENCERRADO_EM'));
+});
+
+test('Reinício completo remove marcadores de encerramento somente após concluir a limpeza', () => {
+  const e = environment(); e.begin();
+  e.properties.set('SEMINFO_EVENTO_ENCERRADO_EM', new Date().toISOString());
+  e.properties.set('SEMINFO_EMAILS_CANCELADOS_EM', new Date().toISOString());
+  const result = e.context.limparTudoERecomecar();
+  assert.equal(result.zerado, true);
+  assert(!e.properties.has('SEMINFO_EVENTO_ENCERRADO_EM'));
+  assert(!e.properties.has('SEMINFO_EMAILS_CANCELADOS_EM'));
+  assert.equal(e.context.readState_().accepting, false);
+});
 
 test('Perguntas com ID instalado não consultam a planilha de configuração novamente', () => {
   const e = environment(), installed = e.installed(), form = e.forms.get(installed.registrationId);

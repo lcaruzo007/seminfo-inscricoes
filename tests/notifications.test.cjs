@@ -46,6 +46,10 @@ function setup(overrides = {}) {
   }
   const context = vm.createContext({
     console, Date, Math, Number, Object, String, JSON,
+    props_: () => ({
+      getProperty: key => config[key] || '',
+      setProperty: (key, value) => { config[key] = value; }
+    }),
     getConfig_: () => ({ ...config }),
     requireInstaller_: () => {},
     db_: () => ({
@@ -107,6 +111,50 @@ function operation(key = 'FORM:RESPOSTA1', code = 'confirmed', extraOutcome = {}
     }
   };
 }
+
+test('Encerramento cancela pendentes e leases expirados, preserva enviados e impede recriação e reenvio', () => {
+  const env = setup();
+  const operations = ['pendente', 'expirada', 'enviada'].map(key => operation('FORM:' + key));
+  env.sync(operations);
+  const rows = env.rows();
+  rows[0].PROXIMA_TENTATIVA = '2099-01-01T00:00:00Z'; env.update(rows[0]);
+  rows[1].SITUACAO = 'processando'; rows[1].LEASE_ATE = '2000-01-01T00:00:00Z'; rows[1].TENTATIVAS = 3; env.update(rows[1]);
+  rows[2].SITUACAO = 'enviada'; rows[2].ENVIADA_EM = '2026-10-28T12:00:00Z'; env.update(rows[2]);
+  const result = env.context.cancelarEmailsPendentes();
+  assert.equal(result.canceladas, 2); assert.equal(result.enviadasPreservadas, 1);
+  assert.deepEqual(env.rows().map(row => row.SITUACAO), ['cancelada', 'cancelada', 'enviada']);
+  assert.equal(env.rows()[1].TENTATIVAS, 3);
+  assert.equal(env.rows()[2].ENVIADA_EM, '2026-10-28T12:00:00Z');
+  assert.equal(env.sync([...operations, operation('FORM:NOVA')]), 0);
+  assert.equal(env.context.claimNotificationLocked_(), null);
+  env.context.processarNotificacoes();
+  assert.equal(env.sent.length, 0); assert.equal(env.rows().length, 3);
+  assert.equal(env.context.cancelarEmailsPendentes().canceladas, 0);
+});
+
+test('Reserva ativa conserva resultado real: sucesso tardio é enviado, falha tardia é cancelada', () => {
+  for (const error of ['', 'SERVICO: falha']) {
+    const env = setup(); env.sync([operation()]);
+    const job = env.context.withLock_(() => env.context.claimNotificationLocked_());
+    assert.equal(env.context.cancelarEmailsPendentes().emEnvio, 1);
+    assert.equal(env.rows()[0].SITUACAO, 'processando');
+    assert.equal(env.context.withLock_(() => env.context.finishNotificationLocked_(job, error)), true);
+    assert.equal(env.rows()[0].SITUACAO, error ? 'cancelada' : 'enviada');
+  }
+});
+
+test('Suspensão ocorrida entre claim e MailApp impede o envio reservado', () => {
+  const env = setup(); env.sync([operation()]);
+  const claim = env.context.claimNotificationLocked_;
+  env.context.claimNotificationLocked_ = () => {
+    const job = claim();
+    env.config.SEMINFO_EMAILS_CANCELADOS_EM = new Date().toISOString();
+    return job;
+  };
+  env.context.processarNotificacoes();
+  assert.equal(env.sent.length, 0);
+  assert.equal(env.rows()[0].SITUACAO, 'cancelada');
+});
 
 test('Prazo reserva a confirmação do envio e deixa mensagens seguintes pendentes para retomada', () => {
   const env = setup();

@@ -78,7 +78,8 @@ def main():
 
     delivery = [(ROOT / "README.md").read_text(encoding="utf-8"), "\n---\n\n",
                 (DOCS / "MANUAL.md").read_text(encoding="utf-8"), "\n---\n\n",
-                (DOCS / "COMECAR_DO_ZERO.md").read_text(encoding="utf-8"), "\n---\n\n# Arquivos de instalação — conteúdo integral\n"]
+                (DOCS / "COMECAR_DO_ZERO.md").read_text(encoding="utf-8"), "\n---\n\n",
+                (DOCS / "ENCERRAMENTO.md").read_text(encoding="utf-8"), "\n---\n\n# Arquivos de instalação — conteúdo integral\n"]
     for name in SOURCES + ["appsscript.json"]:
         language = "json" if name.endswith(".json") else "javascript"
         delivery.append(f"\n## src/{name}\n\n```{language}\n{(SRC / name).read_text(encoding='utf-8').rstrip()}\n```\n")
